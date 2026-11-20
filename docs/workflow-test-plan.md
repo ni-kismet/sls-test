@@ -1,0 +1,497 @@
+# SystemLink Server container: GitHub Actions workflow test plan
+
+Goal: prove the full CI loop on GitHub-hosted runners with a private GHCR registry, using an image that contains every
+SystemLink service needed by the automated migration feature.
+
+1. **build-images** (run manually) builds the SystemLink Server base image (server + Software Configuration, Test and
+   Asset modules), then two seeded configuration images on top of it (`demo`, `migration`), and publishes all three to
+   private `ghcr.io/rajsite/sls-server`.
+2. **e2e-demo** and **e2e-migration** (separate workflows) each pull one image, start it, and run a Playwright suite
+   specific to that image.
+
+Status legend: `[ ]` open, `[x]` done, `[~]` partial / deviates (see note).
+
+---
+
+## 0. Decisions and assumptions
+
+| # | Decision |
+|---|----------|
+| D1 | `rajsite/sls-test` is **public**; GHCR packages stay **private**. Publishing the tooling is approved (the end state is a public repo). |
+| D2 | Runner: `ubuntu-latest` (public repo = 4 vCPU / 16 GB RAM / 14 GB SSD + `/mnt` temp disk, KVM available). Confirmed by the probe (W0). |
+| D3 | `build-images` runs **only via `workflow_dispatch`**. No schedule. |
+| D4 | One admin password for every image: repo secret `SLS_ADMIN_PASSWORD` → `SLS_BUILD_ADMIN_PASSWORD` at build. Consumers never reset it (no `SLS_ADMIN_PASSWORD` at run time). |
+| D5 | Source of truth for the tooling stays `C:\dev\azdo\mraj-sls-container` (commits there stay local, not pushed). It is copied into `sls-test/sls/` by a sync script that records the source commit. Pushing `rajsite/sls-test` is required to run the workflows. |
+| D6 | The base image installs **`ni-systemlink-server` + `ni-systemlink-software-config-module` + `ni-systemlink-test-module` + `ni-systemlink-asset-module`** (§2). Each comes from its own product feed; the build derives the feeds from the package names. |
+| D7 | Seeded configurations: **`demo`** (existing: 100 tags + 1 file) and **`migration`** (new: every resource marked *Automated migration* in §2, plus a few *Out of scope* items as negative controls). This replaces the earlier `alarms` idea. |
+| D8 | GHCR image name `ghcr.io/rajsite/sls-server` (user-scoped package, linked to the repo through the existing `org.opencontainers.image.source` label, which is derived from `git remote origin`). |
+| D9 | e2e jobs test the **exact digests** of the triggering build when started by `workflow_run`; manual runs take an image input (default: floating tag). |
+
+---
+
+## 1. Architecture
+
+```
+workflow_dispatch
+      │
+build-images.yml ──────────────────────────────────────────────────────────────────────────────────────
+  base (≈75–120 min)              seed [demo, migration] (matrix, ≈10–20 min each)      promote (≈1 min)
+  Build-SlsImage.ps1       ──►    New-SlsConfigImage.ps1 -BaseImage <base digest>  ──►  imagetools create
+  server + 3 modules              push :26.5-<cfg>-r<N>                                 :26.5  :26.5.1
+  push :26.5.1-<date>-r<N>                                                              :26.5-demo
+                                                                                        :26.5-migration
+  artifact images.json (all digests)
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+      │ workflow_run (success)                            │ workflow_run (success)
+e2e-demo.yml ──► _sls-e2e.yml                             e2e-migration.yml ──► _sls-e2e.yml
+                 (demo digest, project=demo)                                    (migration digest, project=migration)
+                 pull → run → healthy → Playwright → leak-guarded artifacts
+```
+
+Image tags (all in `ghcr.io/rajsite/sls-server`):
+
+| Tag | Written by | Mutable |
+|-----|-----------|---------|
+| `26.5.1-<yyyymmdd>-r<run>` | base job | no |
+| `26.5-demo-r<run>`, `26.5-migration-r<run>` | seed jobs | no |
+| `26.5`, `26.5.1` | promote | yes |
+| `26.5-demo`, `26.5-migration` | promote | yes |
+
+Floating tags move only after base **and** both seeds (each with its verify step) succeed.
+
+---
+
+## 2. Package coverage for automated migration
+
+The current image (build `s2b`) installs only `ni-systemlink-server` (feed `ni-systemlink-server/26.5`). The
+migration resources need three more products. Each has its own feed under
+`https://download.ni.com/support/nipkg/products/ni-s/<product>/26.5/released` (+ `released-critical`, currently empty),
+and each feed is self-contained (it also carries the shared server packages).
+
+| SystemLink resource | Treatment | Packages (product feed) | In `s2b` |
+|---|---|---|---|
+| Workspaces | Automated | `ni-skyline-user-service`, `ni-skyline-security-webui` (server) | yes |
+| Files | Automated | `ni-skyline-file-service`, `-file-webservice`, `-file-webui` (server) | yes |
+| Test Monitor products / results / steps | Automated | `ni-skyline-test-monitor-service`, `-webservice`, `-webui`, `-common`; `ni-systemlink-postgresqldatabase-13.3` (**test-module**) | **no** |
+| Feeds and hosted packages | Automated | `ni-systemlink-repository-webservice` (server, yes); `ni-skyline-repo-webui` (**software-config-module**; only *suggested* by the server) | UI **no** |
+| Assets, calibration history | Automated | `ni-skyline-asset-webservice`, `ni-skyline-apm-service`, `-apm-webservice`, `ni-systemlink-apm-webui` (**asset-module**) | **no** |
+| Users | Automated | `ni-skyline-user-service` (server) | yes |
+| System states | Automated | `ni-systemlink-states-webservice` (**software-config-module**) | **no** |
+| Systems | Manual prep | `ni-systemlink-system-webservice`, `ni-sysmgmt-*`, `ni-sysmgmt-webui` (**software-config-module**) | **no** |
+| Roles, role mappings | Manual prep | `ni-skyline-user-service`, `ni-skyline-security-webui` (server) | yes |
+| Tags + history, alarms, tile dashboards, web apps, notebooks, UserData, TDM, DataFinder, routines | Out of scope | Already in the server, or pulled in as module dependencies (notebook execution, JupyterHub). Nothing extra needed. | n/a |
+
+Top-level packages to install: `ni-systemlink-server`, `ni-systemlink-software-config-module`,
+`ni-systemlink-test-module`, `ni-systemlink-asset-module` (all 26.5.1.49157). The test and asset modules both depend on
+the software configuration module, so listing it is only for clarity.
+
+Effects to measure in the first full build (W4):
+
+- **Image size vs. GHCR's 10 GB per-layer limit.** The disk layer is one file (`base.qcow2`, zstd). It was 7.67 GB
+  without the modules; PostgreSQL, Python 3.8/JupyterHub and the module services will add to it. Gate: < 9.5 GB.
+  Mitigations if it's over: more seal cleanup (NIPM package cache, component store), or split into two disk layers
+  (base qcow2 + a modules overlay qcow2 backed by it, the same mechanism the configuration images already use).
+- **Install time, boot-to-healthy time and guest RAM** with the extra services (PostgreSQL, Salt master, APM rule
+  engine). Default guest RAM for consumers may need to go from 8 GB to 10 GB.
+- **Licensing of the modules in an unlicensed/evaluation install.** If module APIs or UIs are blocked without a
+  license, use the existing user-based license mechanism (`/licenses` mount → guest license folder): a license file
+  stored as repo secret `SLS_LICENSE_FILE_B64`, written to a temp folder at job start, never uploaded and never
+  baked into an image.
+
+---
+
+## 3. Public repository exposure
+
+Everything printed to workflow logs and every uploaded artifact is world-readable. Rules:
+
+| Item | Rule |
+|------|------|
+| `SLS_ADMIN_PASSWORD` | Only as a secret; GitHub masks it in logs. Never written to files that get uploaded. |
+| VM account password (generated per build, in `credentials.json`) | Tooling emits `::add-mask::<value>` when `GITHUB_ACTIONS=true` before first use. |
+| License file (only if needed, §2) | Secret `SLS_LICENSE_FILE_B64`; decoded into `$RUNNER_TEMP`, mounted read-only, deleted at job end; its folder is never staged for upload. |
+| `sls/out/builds/<id>/credentials.json` | Never uploaded (explicit exclude). |
+| `sls/out/builds/<id>/oem/` (holds `config.json` with the admin password; left behind if Install fails) | Never uploaded (explicit exclude). |
+| Disk files (`*.qcow2`, `*.img`, `*.iso`) | Never uploaded (size and content). |
+| `ca-certificates.crt` | Not uploaded (not needed in CI). |
+| Playwright login (`auth.setup.ts`) | Trace/video **off** for the setup project (a trace records the login POST body). `.auth/` storage state is never uploaded. |
+| Playwright tests | `trace: retain-on-failure`, `screenshot: only-on-failure`, `video: off`. Tests use the stored session, so traces don't contain the password. |
+| Guest logs (`Save-SlsLogs`), `docker logs` | Uploaded only on failure, after the leak guard. |
+| **Leak guard** | `scripts/Test-NoSecret.ps1` scans every staged directory before upload (plain files **and** the contents of `.zip` traces) for the admin password, the VM password and the license file contents. On a hit it deletes the staging directory and fails the step, so nothing is uploaded; it prints only the file name, never the match. |
+| Artifact retention | `retention-days: 7`. |
+| Fork PRs | Approval required for all outside contributors (set). Workflows never use `pull_request_target`. PR-triggered e2e jobs run only for same-repo branches (`github.event.pull_request.head.repo.full_name == github.repository`); fork PRs get no secrets. |
+| Package visibility | Verified **Private** after the first push (W8.7). |
+
+Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, `install/**`, `seal/**`, `agent/**`,
+`context.json`) contain neither password.
+
+---
+
+## 4. Implementation checklist
+
+### W0. Repo bootstrap and runner probe
+
+- [x] W0.1 Initial commit on `main`:
+  - `README.md` (purpose, link to this plan)
+  - `.gitignore`: `sls/out/`, `e2e/node_modules/`, `e2e/.auth/`, `e2e/playwright-report/`, `e2e/test-results/`
+  - `.gitattributes`: `* text=auto`, LF for `*.sh`, `*.yml`, Dockerfiles and `sls/image/bin/*`, binary for `*.png`.
+    `[~]` No `*.ps1 eol=crlf`: the source repo doesn't pin it either, so the copy keeps the same rules.
+- [x] W0.2 `.github/workflows/probe.yml` (`workflow_dispatch`):
+  - print `nproc`, `free -g`, `df -h / /mnt`, `ls -l /dev/kvm`, `pwsh --version`
+  - print `docker info` (storage driver, data root, cgroup)
+  - run `docker run --rm --device /dev/kvm alpine:3 test -c /dev/kvm`
+- [ ] W0.3 Push, run the probe, record results in §7. Gate: KVM usable in containers, ≥ 16 GB RAM, and `/mnt` plus freed `/` can give Docker ≥ 60 GB.
+- [ ] W0.4 `.github/actions/sls-host-prep/action.yml` (composite):
+  - free `/`: remove `/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/share/boost`, `/opt/hostedtoolcache/CodeQL`; `docker image prune -af`
+  - move the Docker data root to `/mnt/docker` (`daemon.json`, restart docker). Fallback if `/mnt` is too small: an LVM volume over the free space of `/` and `/mnt` (as `easimon/maximize-build-space` does)
+  - check `/dev/kvm` and `/dev/net/tun` from a container
+  - `docker login ghcr.io` with `GITHUB_TOKEN` (input `registry-login`)
+  - optional input `license-b64` → `$RUNNER_TEMP/sls-licenses/*.lic`, path exported as `SLS_LICENSE_DIR`
+  - print a one-line host summary (CPU, RAM, Docker free GB)
+- [ ] W0.5 Make the probe call `sls-host-prep`; check Docker free space after prep. Commit and push.
+
+### W1. Linux compatibility of the tooling (in `mraj-sls-container`, local commits)
+
+The tooling has only run in pwsh on Windows against Docker Desktop. On Linux, pwsh normalizes `\` in cmdlet paths
+but **not** in arguments passed to native commands such as `docker`.
+
+- [ ] W1.1 Install pwsh 7.5 in WSL Ubuntu (Microsoft package repo); confirm `docker` there reaches an engine with `/dev/kvm`.
+- [ ] W1.2 Fix host-side paths passed to native commands. Known spots:
+  - `build/stages/Install.ps1`: `image\bin\.`, `image\guest\.`, `build\guest\install.bat`, `build\guest\*.ps1`
+  - `build/New-SlsConfigImage.ps1`: `image\config.Dockerfile`, `out\configs\<name>`
+  - `build/Build-SlsImage.ps1`, `build/SlsBuild.psm1`, `build/Test-SlsRuntime.ps1`: `out\builds\…`, `testkit\SlsTestKit.psm1`, `out\runtime-tests\…`
+  - `testkit/SlsTestKit.psm1`: license temp folder and `/licenses` mount path
+  - Use multi-segment `Join-Path` (or `/`), which works on both OSes. Guest-side strings (`C:\…`, run inside Windows) stay as they are.
+- [ ] W1.3 Review the remaining host code for Windows-only assumptions:
+  - `$env:TEMP` / `LOCALAPPDATA` (use `[IO.Path]::GetTempPath()`), `.exe` names, host `Get-CimInstance`
+  - CRLF in files copied into the Linux container
+  - file modes of `image/bin/*` and `image/*.sh`
+- [ ] W1.4 `Test-SlsDockerHost`: keep the in-container `df` (it measures the Docker data root, which is right for `/mnt/docker`); add `Build-SlsImage.ps1 -MinFreeGB` (env `SLS_BUILD_MIN_FREE_GB`).
+- [ ] W1.5 Commit (no push). Runtime validation happens in W4 together with the module build.
+
+### W2. CI hooks in the tooling (in `mraj-sls-container`, local commits)
+
+- [ ] W2.1 GitHub masking: when `GITHUB_ACTIONS=true`, write `::add-mask::` for the admin password (in case it was generated) and the VM password as soon as `credentials.json` is created (`Build-SlsImage.ps1`) or read (`Get-SlsImageCredential`).
+- [ ] W2.2 Machine-readable result: `Build-SlsImage.ps1` and `New-SlsConfigImage.ps1` write `result.json` (image, tags, image id, versions, installed product list, Windows eval expiry, sizes incl. disk layer bytes, timings) in their out dir, and append `image=`, `tags=`, `sls_full_version=` to `$GITHUB_OUTPUT` when set.
+- [ ] W2.3 `Build-SlsImage.ps1 -ExtraTag <string[]>` and `New-SlsConfigImage.ps1 -ExtraTag` so the immutable `-r<run>` tag is applied before push.
+- [ ] W2.4 `New-SlsConfigImage.ps1 -LicenseFile <path[]>` (passes through to `Start-SlsServer -LicenseFile`) for seeding when modules need a license (§2).
+- [ ] W2.5 Confirm the image labels in CI: `org.opencontainers.image.source` = `https://github.com/rajsite/sls-test`, `revision` = sls-test commit (from `Get-SlsGitInfo`, which runs `git` in the copied tree).
+- [ ] W2.6 Commit (no push).
+
+### W3. Migration package coverage (in `mraj-sls-container`, local commits)
+
+- [ ] W3.1 `Build-SlsImage.ps1`: default `-Packages` = `ni-systemlink-server`, `ni-systemlink-software-config-module`, `ni-systemlink-test-module`, `ni-systemlink-asset-module`. When `-Feeds` is not given, derive `…/ni-s/<package>/<SlsVersion>/released` and `released-critical` for each top-level package (all four are products with their own feed). The preflight already checks every feed URL.
+- [ ] W3.2 Guest install (`Install-Sls.ps1`): one `nipkg install` with all four packages (`--include-recommended`). Record each product's installed version in `versions.json` (`products: { server, softwareConfig, test, asset }`), plus labels `com.ni.sls.products`, and add products to the build summary.
+- [ ] W3.3 Service coverage check, run by the build's Verify stage and by `Test-SlsRuntime.ps1`:
+  - authenticated GET or POST against one endpoint per migration resource: workspaces (`niuser`), files (`nifile`), Test Monitor products / results / steps (`nitestmonitor`), feeds (`nifeed`), assets + calibration (`niapm`), users (`niuser`), states (`nisystemsstate`), systems (`nisysmgmt`)
+  - exact routes are confirmed against the running image in W4.3 and recorded in this table
+  - the check fails the build if any service answers 404/5xx; a license-related 403/402 is reported separately (§2 licensing)
+- [ ] W3.4 Seal review: make sure the module services are stopped/started cleanly by the seal and the agent (PostgreSQL, Salt master, APM). The ready condition (all automatic NI services running + HTTP 200/401) must include them.
+- [ ] W3.5 Disk layer gate in the Image stage: log `base.qcow2` bytes; fail when > `-MaxDiskLayerGB` (default 9.5) with a hint pointing to §2 mitigations.
+- [ ] W3.6 README and root `implementation-plan.md` (source repo): document the default products and how to build server-only (`-Packages ni-systemlink-server`).
+- [ ] W3.7 Commit (no push).
+
+### W4. Full local build on Linux (WSL), modules included
+
+- [ ] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
+- [ ] W4.2 If the disk layer gate fails: apply the §2 mitigations (seal cleanup first, two-layer split if still over) and rebuild.
+- [ ] W4.3 Boot the image; confirm every module UI page loads (Test Monitor, Assets, Package Repository, Systems, States) and the §W3.3 endpoints answer. Record boot-to-healthy time and guest RAM use (8 GB vs. 10 GB).
+- [ ] W4.4 Licensing check: with no license file, do the module APIs/UIs work (evaluation), or are they blocked? Record the outcome. If blocked: get a user-based license file, store it as `SLS_LICENSE_FILE_B64`, and re-check with `-LicenseFile`.
+- [ ] W4.5 `Test-SlsRuntime.ps1` and `testkit/examples/Test-SlsServer.ps1` in WSL against the new image: green.
+- [ ] W4.6 Re-run `Test-SlsRuntime.ps1` once from Windows pwsh against the same image (no regression on Windows).
+- [ ] W4.7 Commit any fixes (no push).
+
+### W5. Seed configurations (in `mraj-sls-container`, local commits)
+
+- [ ] W5.1 `configs/demo`: re-verify against the module image (`New-SlsConfigImage.ps1 -Name demo`).
+- [ ] W5.2 Confirm the APIs for the migration seed against the W4 image (request shapes, required fields):
+  - workspaces: `POST /niuser/v1/workspaces`
+  - users: what "user data" the user service holds on SLS (local/Windows users vs. created users); seed what the API allows
+  - files with workspace + metadata
+  - Test Monitor: `POST /nitestmonitor/v2/products`, `/results` (status, partNumber, fileIds), `/steps` (nested)
+  - feeds: `POST /nifeed/v1/feeds`, package upload to a feed
+  - assets: `POST /niapm/v1/assets`, calibration history entries (operator)
+  - system states: `POST /nisystemsstate/v1/states`
+- [ ] W5.3 `configs/migration/Seed.ps1` (same contract as `configs/demo/Seed.ps1`: create without `-Verify`, check with `-Verify`). Data, all names prefixed `mig-`:
+  - **Workspaces**: `mig-ws-a`, `mig-ws-b`
+  - **Files**: 4 files across both workspaces with custom properties; 2 are attached to test results
+  - **Test Monitor**: 2 products (`MIG-PN-100`, `MIG-PN-200`) with properties; 12 results across both products and workspaces:
+    - 8 terminal (`PASSED`/`FAILED`/`ERRORED`)
+    - 2 non-terminal (`RUNNING`)
+    - 2 custom status
+    - each result has 2–4 steps, including nested steps with inputs/outputs/measurement data; 2 results reference the files above
+  - **Feeds**: feed `mig-feed` in `mig-ws-a` with one hosted package. Build a minimal `.nipkg` with `nipkg pack` inside the guest (via `Invoke-SlsGuest`), then upload it.
+  - **Assets**: 3 manually created assets (one per workspace + one in Default), each with 2 calibration history entries including an operator name
+  - **Users**: the supported user data per W5.2
+  - **System states**: 2 state definitions (one per workspace) referencing `mig-feed` and its package
+  - **Out-of-scope negative controls** (seeded so migration tests can assert they are *not* transferred): 5 tags `mig.tag.*` with values, 1 alarm instance `mig-alarm-1`, 1 UserData entry
+  - **Not seeded**: systems (manual preparation; no managed systems in a container), roles and role mappings (manual preparation)
+  - `-Verify` checks counts per resource and the relationships (result → product, result → steps, result → files, state → feed).
+- [ ] W5.4 Build `sls-server:26.5-migration` locally from the W4 image; verify a fresh container from it. Record layer size and time.
+- [ ] W5.5 Write a manifest `configs/migration/manifest.json` (names, counts and relationships) used by both `-Verify` and the Playwright suite, so expected values live in one place.
+- [ ] W5.6 Commit (no push).
+
+### W6. Tooling sync and leak guard in `sls-test`
+
+- [ ] W6.1 `scripts/Sync-SlsTooling.ps1 -Source C:\dev\azdo\mraj-sls-container`:
+  - refuses a dirty source tree
+  - mirrors `build/`, `image/`, `testkit/`, `configs/` into `sls/` and deletes removed files; never copies `out/`
+  - writes `sls/SOURCE.md` (source repo, commit, date)
+- [ ] W6.2 `scripts/Test-NoSecret.ps1 -Path <dir> [-Secret <string[]>]`:
+  - default secrets: `$env:SLS_ADMIN_PASSWORD`, passwords found in `sls/out/builds/*/credentials.json`, decoded `SLS_LICENSE_FILE_B64`
+  - scans text files and expanded `.zip` entries; on a hit prints only the file name, deletes the path, exits 1
+  - local test with a planted fake secret in a plain file and inside a zip
+- [ ] W6.3 `scripts/Push-SlsImage.ps1 -Image <ref> -Tag <tag[]>`: tags, pushes with up to 3 retries (backoff), prints and outputs `repo@sha256:…`.
+- [ ] W6.4 `.github/actions/sls-upload-logs/action.yml`: stage the given paths with excludes (`credentials.json`, `oem/`, `ca-certificates.crt`, `*.qcow2`, `*.img`, `*.iso`, `.auth/`, license folder) → `Test-NoSecret.ps1` → `actions/upload-artifact` (`retention-days: 7`).
+- [ ] W6.5 Run the sync, commit `sls/` and the scripts, push.
+
+### W7. Playwright suites (in `sls-test/e2e`, developed locally)
+
+- [ ] W7.1 `e2e/package.json` (`@playwright/test` pinned), `tsconfig.json`, lockfile.
+- [ ] W7.2 `playwright.config.ts`:
+  - `baseURL` from `SLS_BASE_URL` (default `http://localhost:8080`)
+  - projects: `setup` (`auth.setup.ts`, trace/video off), `demo` (`tests/demo/**`), `migration` (`tests/migration/**`); both depend on `setup` and use `.auth/admin.json`
+  - `trace: 'retain-on-failure'`, `screenshot: 'only-on-failure'`, `video: 'off'`, `retries: 1` in CI
+  - reporters: `list`, `html` (`open: 'never'`), `github`, `junit` (`results.xml`)
+  - timeouts sized for a cold SystemLink UI (first page load 10–20 s)
+- [ ] W7.3 `tests/auth.setup.ts`: open `/#/login`, fill `SLS_USER` (default `admin`) / `SLS_PASSWORD`, submit, wait until the URL leaves the login route, save the storage state. Selectors confirmed against the local image.
+- [ ] W7.4 `tests/demo/` (image `26.5-demo`):
+  - `tags.spec.ts`: Tag Viewer finds `demo.line1.*` → 10 rows; `demo.line1.sensor001` shows `1.25`; `demo.line10.sensor100` shows `100.25`
+  - `files.spec.ts`: Files page lists `sls-demo.txt`
+  - `api.spec.ts`: through the authenticated `request` fixture, `nitag` reports 100 `demo.*` tags
+  - `isolation.spec.ts`: none of the `mig-*` data exists
+- [ ] W7.5 `tests/migration/` (image `26.5-migration`). Expected values come from `sls/configs/migration/manifest.json`:
+  - `workspaces.spec.ts`: Workspaces page lists `mig-ws-a`, `mig-ws-b`
+  - `testmonitor.spec.ts`: Products grid shows both part numbers; Results grid filtered to `MIG-PN-100` shows the expected count and statuses; a result's detail shows its steps (nested) and attached file
+  - `assets.spec.ts`: Asset grid shows the 3 assets; calibration history of one asset shows 2 entries with the operator
+  - `feeds.spec.ts`: Package Repository shows `mig-feed` with its package
+  - `states.spec.ts`: States page lists both state definitions in their workspaces
+  - `files.spec.ts`: Files page lists the 4 files with workspace and custom properties
+  - `api.spec.ts`: API counts and relationships for every resource (backs up each UI check)
+  - `isolation.spec.ts`: no `demo.*` tags and no `sls-demo.txt`
+- [ ] W7.6 `e2e/README.md`: running locally (`docker run … -p 8080:80 sls-server:26.5-migration`, password via `Get-SlsImageCredential`), choosing a project, updating selectors.
+- [ ] W7.7 Run both suites locally against both local images: green. Also run each suite against the *other* image to confirm the isolation tests fail there. Commit and push.
+
+### W8. `build-images.yml`
+
+- [ ] W8.1 Trigger: `workflow_dispatch` only. Inputs:
+  - `sls_version` (default `26.5`)
+  - `packages` (default the four products from D6)
+  - `configs` (default `demo,migration`)
+  - `ram` (default `12G`), `cpu` (default `4`)
+  - `promote` (bool, default `true`)
+- [ ] W8.2 Top level: `permissions: { contents: read, packages: write }`; `concurrency: build-images` (no parallel builds); env `REPO=ghcr.io/rajsite/sls-server`.
+- [ ] W8.3 Job `matrix`: turns the `configs` CSV into a JSON matrix output.
+- [ ] W8.4 Job `base` (`timeout-minutes: 300`):
+  1. checkout; `sls-host-prep`
+  2. `Build-SlsImage.ps1 -SlsVersion … -Packages … -Repository $REPO -BuildId gh-${{ github.run_id }} -Ram … -Cpu … -ExtraTag <full>-<date>-r${{ github.run_number }}` with `SLS_BUILD_ADMIN_PASSWORD` from the secret
+  3. `Push-SlsImage.ps1` with only the immutable tag; outputs `image` (`$REPO@sha256:…`) and `full_version`
+  4. `if: always()`: `sls-upload-logs` for `sls/out/builds/gh-<run_id>` (artifact `base-logs`)
+- [ ] W8.5 Job `seed` (`needs: [matrix, base]`, `fail-fast: false`, `timeout-minutes: 75`):
+  1. checkout; `sls-host-prep` (with the license if configured); `docker pull <base digest>`
+  2. `New-SlsConfigImage.ps1 -BaseImage <digest> -Name <cfg> -Seed sls/configs/<cfg>/Seed.ps1 -ExtraTag 26.5-<cfg>-r<run>` with `SLS_BUILD_ADMIN_PASSWORD` (the base credential source on a fresh runner)
+  3. push; output the digest; write `seed-<cfg>.json` (`{config, image}`) as an artifact
+  4. `sls-upload-logs` (artifact `seed-<cfg>-logs`)
+- [ ] W8.6 Job `promote` (`needs: [base, seed]`, `if: inputs.promote`, no prep):
+  1. `docker login`
+  2. `docker buildx imagetools create -t $REPO:26.5 -t $REPO:<x.y.z> <base digest>`; same for `26.5-<cfg>`
+  3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
+  4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry
+- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown.
+- [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
+
+### W9. e2e workflows
+
+- [ ] W9.1 `.github/workflows/_sls-e2e.yml` (`workflow_call`):
+  - inputs `image`, `project`, `ram` (default from W4.3, 8G or 10G), `cpu` (default `4`); secrets `SLS_ADMIN_PASSWORD`, optional `SLS_LICENSE_FILE_B64`
+  - `permissions: { contents: read, packages: read }`; `timeout-minutes: 45`
+  - Steps:
+    1. checkout; `sls-host-prep`; `docker pull <image>` (timed)
+    2. `docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -e RAM_SIZE -e CPU_CORES -p 8080:80 [-v $SLS_LICENSE_DIR:/licenses:ro] <image>` (no `SLS_CONFIG`, no `SLS_ADMIN_PASSWORD`)
+    3. wait until healthy (`docker inspect -f '{{.State.Health.Status}}'`, 15 min limit; print the `docker logs` tail on timeout)
+    4. `actions/setup-node` (cache `e2e/package-lock.json`); `npm ci`; `npx playwright install --with-deps chromium`
+    5. `npx playwright test --project <project>` with `SLS_BASE_URL`, `SLS_USER=admin`, `SLS_PASSWORD`
+    6. `if: always()`: `sls-upload-logs` with `playwright-report/`, `test-results/`, `results.xml` (artifact `e2e-<project>-report`)
+    7. `if: failure()`: `Save-SlsLogs` + `docker logs` → `sls-upload-logs` (artifact `e2e-<project>-server-logs`)
+    8. `if: always()`: `docker stop sls`
+- [ ] W9.2 `e2e-demo.yml` and `e2e-migration.yml` (thin callers). Triggers:
+  - `workflow_run: { workflows: [build-images], types: [completed] }`, job `if: conclusion == 'success'`; the image comes from the triggering run's `images` artifact (`actions/download-artifact` with `run-id` + `github-token`)
+  - `workflow_dispatch` with input `image` (default `ghcr.io/rajsite/sls-server:26.5-demo` / `:26.5-migration`)
+  - `pull_request` on `e2e/**` and the workflow files, same-repo branches only, using the floating tag
+- [ ] W9.3 Dispatch each e2e workflow manually against the floating tags: green.
+- [ ] W9.4 Run `build-images` again (full) and confirm both e2e workflows start automatically and test the new digests.
+- [ ] W9.5 Negative check: dispatch `e2e-migration` with the demo image → migration and isolation tests fail; the report artifact uploads and passes the leak guard.
+
+### W10. Wrap-up
+
+- [ ] W10.1 Audit the artifacts of one full run: download all, run `Test-NoSecret.ps1` locally against them, inspect a failure trace by hand.
+- [ ] W10.2 Fill in §7 (timings, sizes, minutes used, licensing outcome, endpoint table) and §8.
+- [ ] W10.3 Root `README.md`: what the workflows do, how to dispatch them, how to use the images locally (`docker login ghcr.io` with a PAT that has `read:packages`), the products in the image.
+- [ ] W10.4 Sync final tooling changes (W6.5), commit, push.
+
+---
+
+## 5. Workflow sketches
+
+### build-images.yml (shape)
+
+```yaml
+name: build-images
+on:
+  workflow_dispatch:
+    inputs:
+      sls_version: { type: string, default: '26.5' }
+      packages:    { type: string, default: 'ni-systemlink-server,ni-systemlink-software-config-module,ni-systemlink-test-module,ni-systemlink-asset-module' }
+      configs:     { type: string, default: 'demo,migration' }
+      ram:         { type: string, default: '12G' }
+      cpu:         { type: string, default: '4' }
+      promote:     { type: boolean, default: true }
+permissions: { contents: read, packages: write }
+concurrency: build-images
+env:
+  REPO: ghcr.io/rajsite/sls-server
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs: { configs: '${{ steps.m.outputs.configs }}' }
+    steps:
+      - id: m
+        shell: pwsh
+        run: '"configs=$((''${{ inputs.configs }}'' -split '','' | Where-Object { $_ } | ConvertTo-Json -AsArray -Compress))" >> $env:GITHUB_OUTPUT'
+  base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      full_version: ${{ steps.build.outputs.sls_full_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/sls-host-prep
+      - id: build
+        shell: pwsh
+        env: { SLS_BUILD_ADMIN_PASSWORD: '${{ secrets.SLS_ADMIN_PASSWORD }}' }
+        run: >-
+          ./sls/build/Build-SlsImage.ps1 -SlsVersion ${{ inputs.sls_version }} -Packages ('${{ inputs.packages }}' -split ',')
+          -Repository $env:REPO -BuildId gh-${{ github.run_id }} -Ram ${{ inputs.ram }} -Cpu ${{ inputs.cpu }}
+      - id: push
+        shell: pwsh
+        run: ./scripts/Push-SlsImage.ps1 -Image '${{ steps.build.outputs.image }}' -Tag '<full>-<date>-r${{ github.run_number }}'
+      - if: always()
+        uses: ./.github/actions/sls-upload-logs
+        with: { name: base-logs, path: 'sls/out/builds/gh-${{ github.run_id }}' }
+  seed:
+    needs: [matrix, base]
+    if: needs.matrix.outputs.configs != '[]'
+    strategy:
+      fail-fast: false
+      matrix: { config: '${{ fromJSON(needs.matrix.outputs.configs) }}' }
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps: [ prep, pull base digest, New-SlsConfigImage.ps1, push, seed-<cfg>.json artifact, logs ]
+  promote:
+    needs: [base, seed]
+    if: inputs.promote
+    runs-on: ubuntu-latest
+    steps: [ login, imagetools create (floating tags), images.json artifact, job summary ]
+```
+
+### e2e-migration.yml (shape; e2e-demo.yml is the same with `demo`)
+
+```yaml
+name: e2e-migration
+on:
+  workflow_run: { workflows: [build-images], types: [completed] }
+  workflow_dispatch:
+    inputs: { image: { type: string, default: 'ghcr.io/rajsite/sls-server:26.5-migration' } }
+  pull_request:
+    paths: ['e2e/**', 'sls/configs/migration/**', '.github/workflows/e2e-migration.yml', '.github/workflows/_sls-e2e.yml']
+jobs:
+  resolve:
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions: { actions: read }
+    outputs: { image: '${{ steps.r.outputs.image }}' }
+    steps: [ workflow_run: download the `images` artifact of the triggering run and pick .migration; otherwise the input or floating tag ]
+  e2e:
+    needs: resolve
+    uses: ./.github/workflows/_sls-e2e.yml
+    with: { image: '${{ needs.resolve.outputs.image }}', project: migration }
+    secrets:
+      SLS_ADMIN_PASSWORD: '${{ secrets.SLS_ADMIN_PASSWORD }}'
+      SLS_LICENSE_FILE_B64: '${{ secrets.SLS_LICENSE_FILE_B64 }}'
+    permissions: { contents: read, packages: read }
+```
+
+---
+
+## 6. Files added to `sls-test`
+
+```
+README.md
+.gitignore, .gitattributes
+docs/workflow-test-plan.md                  (this file)
+sls/                                        tooling copy (build/ image/ testkit/ configs/) + SOURCE.md
+scripts/Sync-SlsTooling.ps1
+scripts/Test-NoSecret.ps1
+scripts/Push-SlsImage.ps1
+.github/actions/sls-host-prep/action.yml
+.github/actions/sls-upload-logs/action.yml
+.github/workflows/probe.yml
+.github/workflows/build-images.yml
+.github/workflows/_sls-e2e.yml
+.github/workflows/e2e-demo.yml
+.github/workflows/e2e-migration.yml
+e2e/package.json, package-lock.json, tsconfig.json, playwright.config.ts, README.md
+e2e/tests/auth.setup.ts
+e2e/tests/demo/{tags,files,api,isolation}.spec.ts
+e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolation}.spec.ts
+```
+
+---
+
+## 7. Results (filled in during implementation)
+
+| Item | Value |
+|------|-------|
+| Probe: CPU / RAM / `/` free / `/mnt` free / KVM | |
+| Docker free after host prep | |
+| Products and versions installed | |
+| Base build time: WSL (4 vCPU) / GitHub | |
+| Disk layer (`base.qcow2`) size, with modules | |
+| Image size, base / demo / migration layers | |
+| Boot to healthy, guest RAM used | |
+| Module licensing outcome (unlicensed / license file needed) | |
+| Coverage endpoints (resource → route → status) | |
+| Base push time | |
+| Seed job time (demo / migration) | |
+| e2e job time (pull / healthy / tests) | |
+| Actions minutes per full run | |
+
+---
+
+## 8. Risks and open points
+
+| Risk | Mitigation |
+|------|------------|
+| Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2) |
+| Modules blocked without a license | Checked in W4.4; user-based license file via secret and `/licenses` mount (never baked in, never uploaded) |
+| Docker can't get ≥ 60 GB on the hosted runner | `/mnt` data root and a freed `/`; LVM over both; tune `-MinFreeGB` after measuring the real peak |
+| 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM chosen in W4.3 |
+| Build time on 4 vCPU with modules | Measured in W4.1; job timeout 300 min (hosted limit 6 h) |
+| Large-layer push to GHCR stalls | Push retries (W6.3); measured in W8.7 |
+| ≈8–10 GB pull in every e2e job | Accepted for the test; later: larger or self-hosted runners with a warm image cache |
+| Linux path bugs beyond the known list | Full WSL build (W4) before any GitHub run |
+| Seed APIs differ from expectations (users, feed upload, states) | Confirmed in W5.2 before writing the seed; anything unsupported is recorded and left out |
+| UI selectors brittle across SystemLink versions | Prefer roles/labels/text; API specs back up each UI assertion; expected data from one manifest |
+| `workflow_run` only uses workflow files on the default branch | Develop the e2e callers with `workflow_dispatch` first; merge to `main` before relying on `workflow_run` |
+| Windows evaluation expiry (180 days) | Expiry is in the image labels and the job summary; rebuild manually before it lapses (no schedule, D3) |
+| GHCR storage (≈8–10 GB per base build) | Keep recent versions only (follow-up) |
+
+## 9. Follow-ups (out of scope)
+
+- Retention job for GHCR versions.
+- Larger or self-hosted runners with a warm image cache to cut the per-job pull.
+- A second source SLS version (e.g. an older release) to exercise migration from more than one source version.
+- Moving the tooling's source of truth to a public repo and consuming it as a submodule or release instead of a copy.
+- Azure DevOps + JFrog version of the same flow (root `implementation-plan.md` F1–F6 in `mraj-sls-container`).

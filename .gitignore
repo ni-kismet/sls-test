@@ -1,0 +1,11 @@
+# Tooling build work files (credentials, logs, disks)
+sls/out/
+
+# Never commit license files
+*.lic
+
+# Playwright
+e2e/node_modules/
+e2e/.auth/
+e2e/playwright-report/
+e2e/test-results/
