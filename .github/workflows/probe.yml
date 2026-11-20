@@ -2,9 +2,14 @@ name: probe
 
 on:
   workflow_dispatch:
+    inputs:
+      min-free-gb:
+        description: Docker free GB required by sls-host-prep (set high to exercise the reclaim path)
+        default: '60'
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   probe:
@@ -33,3 +38,22 @@ jobs:
           docker run --rm --device /dev/kvm --device /dev/net/tun alpine:3 \
             sh -c 'test -c /dev/kvm && test -c /dev/net/tun && echo "kvm+tun usable in container"'
           docker run --rm alpine:3 df -h /
+
+      - name: Host prep
+        id: prep
+        uses: ./.github/actions/sls-host-prep
+        with:
+          min-free-gb: ${{ inputs.min-free-gb }}
+          registry-login: 'true'
+          license-b64: cHJvYmUtZHVtbXktbGljZW5zZQo= # "probe-dummy-license", exercises staging only
+
+      - name: Host after prep
+        env:
+          FREE_GB: ${{ steps.prep.outputs.docker-free-gb }}
+        run: |
+          set -x
+          echo "docker-free-gb output: $FREE_GB"
+          df -h /
+          docker info --format 'root={{.DockerRootDir}}'
+          test -f "$SLS_LICENSE_DIR/sls.lic" && stat -c '%a %s %n' "$SLS_LICENSE_DIR" "$SLS_LICENSE_DIR/sls.lic"
+          grep -q ghcr.io ~/.docker/config.json && echo "ghcr.io login stored"

@@ -1,0 +1,98 @@
+name: sls-host-prep
+description: >
+  Prepare a GitHub-hosted Ubuntu runner for SystemLink Server image work: make sure Docker has enough free space,
+  check KVM/TUN from a container, optionally log in to GHCR and stage a license file.
+
+inputs:
+  min-free-gb:
+    description: Minimum free GB required in the Docker data root. Space is only reclaimed when below this.
+    default: '60'
+  registry-login:
+    description: Log in to ghcr.io with registry-token ('true'/'false').
+    default: 'false'
+  registry-token:
+    description: Token for ghcr.io (needs packages:write to push, packages:read to pull).
+    default: ${{ github.token }}
+  license-b64:
+    description: Optional base64 license file. Written to $RUNNER_TEMP/sls-licenses; the folder is exported as SLS_LICENSE_DIR.
+    default: ''
+
+outputs:
+  docker-free-gb:
+    description: Free GB in the Docker data root after preparation.
+    value: ${{ steps.space.outputs.free-gb }}
+
+runs:
+  using: composite
+  steps:
+    - name: KVM and TUN inside a container
+      shell: bash
+      run: |
+        docker run --rm --device /dev/kvm --device /dev/net/tun alpine:3 \
+          sh -c 'test -c /dev/kvm && test -c /dev/net/tun' \
+          || { echo "::error::/dev/kvm or /dev/net/tun is not usable from a container"; exit 1; }
+
+    - name: Docker free space
+      id: space
+      shell: bash
+      env:
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
+      run: |
+        docker_free_gb() { docker run --rm alpine:3 df -k / | awk 'NR==2 {print int($4/1048576)}'; }
+        free=$(docker_free_gb)
+        echo "Docker free: ${free} GB (need ${MIN_FREE_GB})"
+        if [ "$free" -lt "$MIN_FREE_GB" ]; then
+          root_dev=$(stat -c %d /); mnt_dev=$(stat -c %d /mnt 2>/dev/null || echo "$root_dev")
+          mnt_free=$(df -k --output=avail /mnt 2>/dev/null | awk 'NR==2 {print int($1/1048576)}')
+          if [ "$mnt_dev" != "$root_dev" ] && [ "${mnt_free:-0}" -gt "$free" ]; then
+            echo "Moving the Docker data root to /mnt/docker (${mnt_free} GB free)"
+            sudo systemctl stop docker docker.socket
+            sudo mkdir -p /mnt/docker
+            sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json 2>/dev/null > /tmp/daemon.json \
+              || echo '{"data-root": "/mnt/docker"}' > /tmp/daemon.json
+            sudo mv /tmp/daemon.json /etc/docker/daemon.json
+            sudo systemctl start docker
+          fi
+          free=$(docker_free_gb)
+        fi
+        if [ "$free" -lt "$MIN_FREE_GB" ]; then
+          echo "Removing preinstalled toolchains not used by SystemLink image work"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          docker image prune -af >/dev/null
+          free=$(docker_free_gb)
+        fi
+        echo "free-gb=$free" >> "$GITHUB_OUTPUT"
+        if [ "$free" -lt "$MIN_FREE_GB" ]; then
+          echo "::error::Docker has ${free} GB free, ${MIN_FREE_GB} GB required"
+          exit 1
+        fi
+
+    - name: Log in to ghcr.io
+      if: inputs.registry-login == 'true'
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.registry-token }}
+        ACTOR: ${{ github.actor }}
+      run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+    - name: Stage license file
+      if: inputs.license-b64 != ''
+      shell: bash
+      env:
+        LICENSE_B64: ${{ inputs.license-b64 }}
+      run: |
+        dir="$RUNNER_TEMP/sls-licenses"
+        mkdir -p "$dir"; chmod 700 "$dir"
+        echo "$LICENSE_B64" | base64 -d > "$dir/sls.lic"
+        chmod 600 "$dir/sls.lic"
+        echo "SLS_LICENSE_DIR=$dir" >> "$GITHUB_ENV"
+
+    - name: Host summary
+      shell: bash
+      env:
+        FREE_GB: ${{ steps.space.outputs.free-gb }}
+      run: |
+        line="Host: $(nproc) vCPU, $(free -g | awk '/^Mem:/ {print $2}') GB RAM, Docker ${FREE_GB} GB free at $(docker info --format '{{.DockerRootDir}}'), $(. /etc/os-release; echo "$PRETTY_NAME"), pwsh $(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')"
+        echo "$line"
+        echo "$line" >> "$GITHUB_STEP_SUMMARY"
