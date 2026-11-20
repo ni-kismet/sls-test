@@ -208,25 +208,31 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 
 ### W2. CI hooks in the tooling (in `mraj-sls-container`, local commits)
 
-- [ ] W2.1 GitHub masking: when `GITHUB_ACTIONS=true`, write `::add-mask::` for the admin password (in case it was generated) and the VM password as soon as `credentials.json` is created (`Build-SlsImage.ps1`) or read (`Get-SlsImageCredential`).
-- [ ] W2.2 Machine-readable result: `Build-SlsImage.ps1` and `New-SlsConfigImage.ps1` write `result.json` (image, tags, image id, versions, installed product list, Windows eval expiry, sizes incl. disk layer bytes, timings) in their out dir, and append `image=`, `tags=`, `sls_full_version=` to `$GITHUB_OUTPUT` when set.
-- [ ] W2.3 `Build-SlsImage.ps1 -ExtraTag <string[]>` and `New-SlsConfigImage.ps1 -ExtraTag` so the immutable `-r<run>` tag is applied before push.
-- [ ] W2.4 `New-SlsConfigImage.ps1 -LicenseFile <path[]>` (passes through to `Start-SlsServer -LicenseFile`) for seeding when modules need a license (§2).
-- [ ] W2.5 Confirm the image labels in CI: `org.opencontainers.image.source` = `https://github.com/rajsite/sls-test`, `revision` = sls-test commit (from `Get-SlsGitInfo`, which runs `git` in the copied tree).
-- [ ] W2.6 Commit (no push).
+- [x] W2.1 GitHub masking: when `GITHUB_ACTIONS=true`, write `::add-mask::` for the admin password (in case it was generated) and the VM password as soon as `credentials.json` is created (`Build-SlsImage.ps1`) or read (`Get-SlsImageCredential`).
+- [~] W2.2 Machine-readable result: `Build-SlsImage.ps1` and `New-SlsConfigImage.ps1` write `result.json` (image, tags, image id, versions, installed product list, Windows eval expiry, sizes incl. disk layer bytes, timings) in their out dir, and append `image=`, `tags=`, `sls_full_version=` to `$GITHUB_OUTPUT` when set.
+  Done differently: no new `result.json`. The existing `build.json` / `config.json` already hold the image, tags,
+  versions, the products map, sizes and stage timings. CI outputs: `build_id`, `image`, `image_id`, `tags`,
+  `sls_full_version`, `disk_layer_bytes`, `out_dir` (base); `image`, `image_id`, `tags`, `layer_bytes`, `out_dir` (config).
+  The Windows eval expiry is in `versions.json` (`eval.expiresUtc`) and in the `com.ni.sls.windows-eval-expires` image label.- [x] W2.3 `Build-SlsImage.ps1 -ExtraTag <string[]>` and `New-SlsConfigImage.ps1 -ExtraTag` so the immutable `-r<run>` tag is applied before push.
+- [x] W2.4 `New-SlsConfigImage.ps1 -LicenseFile <path[]>` (passes through to `Start-SlsServer -LicenseFile`) for seeding when modules need a license (§2).
+- [~] W2.5 Confirm the image labels in CI: `org.opencontainers.image.source` = `https://github.com/rajsite/sls-test`, `revision` = sls-test commit (from `Get-SlsGitInfo`, which runs `git` in the copied tree).
+  `Get-SlsGitInfo` now normalizes GitHub remotes (removes credentials and `.git`, converts SSH to `https://github.com/<owner>/<repo>`).
+  This was checked with unit inputs; the label value itself is confirmed in the first CI run (W8).- [x] W2.6 Commit (no push). `mraj-sls-container` commit `1d020bc`.
 
 ### W3. Migration package coverage (in `mraj-sls-container`, local commits)
 
-- [ ] W3.1 `Build-SlsImage.ps1`: default `-Packages` = `ni-systemlink-server`, `ni-systemlink-software-config-module`, `ni-systemlink-test-module`, `ni-systemlink-asset-module`. When `-Feeds` is not given, derive `…/ni-s/<package>/<SlsVersion>/released` and `released-critical` for each top-level package (all four are products with their own feed). The preflight already checks every feed URL.
-- [ ] W3.2 Guest install (`Install-Sls.ps1`): one `nipkg install` with all four packages (`--include-recommended`). Record each product's installed version in `versions.json` (`products: { server, softwareConfig, test, asset }`), plus labels `com.ni.sls.products`, and add products to the build summary.
-- [ ] W3.3 Service coverage check, run by the build's Verify stage and by `Test-SlsRuntime.ps1`:
+- [x] W3.1 `Build-SlsImage.ps1`: default `-Packages` = `ni-systemlink-server`, `ni-systemlink-software-config-module`, `ni-systemlink-test-module`, `ni-systemlink-asset-module`. When `-Feeds` is not given, derive `…/ni-s/<package>/<SlsVersion>/released` and `released-critical` for each top-level package (all four are products with their own feed). The preflight already checks every feed URL.
+- [~] W3.2 Guest install (`Install-Sls.ps1`): one `nipkg install` with all four packages (`--include-recommended`). Record each product's installed version in `versions.json` (`products: { server, softwareConfig, test, asset }`), plus labels `com.ni.sls.products`, and add products to the build summary.
+  Done with one change: `versions.json` `products` is keyed by package name (`ni-systemlink-test-module: 26.5.x`, …)
+  rather than short names, so `-Packages` can be extended without a schema change. The label
+  `com.ni.sls.products` = `pkg=ver,...` (build arg `SLS_PRODUCTS`).- [x] W3.3 Service coverage check, run by the build's Verify stage and by `Test-SlsRuntime.ps1`:
   - authenticated GET or POST against one endpoint per migration resource: workspaces (`niuser`), files (`nifile`), Test Monitor products / results / steps (`nitestmonitor`), feeds (`nifeed`), assets + calibration (`niapm`), users (`niuser`), states (`nisystemsstate`), systems (`nisysmgmt`)
   - exact routes are confirmed against the running image in W4.3 and recorded in this table
   - the check fails the build if any service answers 404/5xx; a license-related 403/402 is reported separately (§2 licensing)
-- [ ] W3.4 Seal review: make sure the module services are stopped/started cleanly by the seal and the agent (PostgreSQL, Salt master, APM). The ready condition (all automatic NI services running + HTTP 200/401) must include them.
-- [ ] W3.5 Disk layer gate in the Image stage: log `base.qcow2` bytes; fail when > `-MaxDiskLayerGB` (default 9.5) with a hint pointing to §2 mitigations.
-- [ ] W3.6 README and root `implementation-plan.md` (source repo): document the default products and how to build server-only (`-Packages ni-systemlink-server`).
-- [ ] W3.7 Commit (no push).
+- [x] W3.4 Seal review: make sure the module services are stopped/started cleanly by the seal and the agent (PostgreSQL, Salt master, APM). The ready condition (all automatic NI services running + HTTP 200/401) must include them.
+- [x] W3.5 Disk layer gate in the Image stage: log `base.qcow2` bytes; fail when > `-MaxDiskLayerGB` (default 9.5) with a hint pointing to §2 mitigations.
+- [x] W3.6 README and root `implementation-plan.md` (source repo): document the default products and how to build server-only (`-Packages ni-systemlink-server`).
+- [x] W3.7 Commit (no push). `mraj-sls-container` commit `bf54851`.
 
 ### W4. Full local build on Linux (WSL), modules included
 
@@ -519,6 +525,7 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Build time on 4 vCPU with modules | Measured in W4.1; job timeout 300 min (hosted limit 6 h) |
 | Large-layer push to GHCR stalls | Push retries (W6.3); measured in W8.7 |
 | ≈8–10 GB pull in every e2e job | Accepted for the test; later: larger or self-hosted runners with a warm image cache |
+| A module service stops by design or starts late, delaying or blocking ready | Agent waits for NI automatic services with a 180 s grace after the core ones; laggards are logged in `ready.json` (W3.4) |
 | Linux path bugs beyond the known list | Full WSL build (W4) before any GitHub run |
 | Seed APIs differ from expectations (users, feed upload, states) | Confirmed in W5.2 before writing the seed; anything unsupported is recorded and left out |
 | UI selectors brittle across SystemLink versions | Prefer roles/labels/text; API specs back up each UI assertion; expected data from one manifest |
@@ -568,3 +575,34 @@ Notes recorded during implementation that affect later steps.
 - WSL setup for W4: pwsh is installed system-wide. Build from a WSL-native clone (`git clone /mnt/c/dev/azdo/mraj-sls-container ~/sls`)
   so the checkout matches CI; a build from `/mnt/c` would use the Windows working copy and slower 9p bind mounts.
 - Not yet validated on Linux: the guest install and the Seal/Convert/Image/Verify stages (W4).
+
+**W2 (CI hooks), `mraj-sls-container` `1d020bc`**
+
+- Masking writes `::add-mask::` straight to the console (`Register-SlsSecret`), never through `Write-SlsLog`, so
+  secrets never reach `build.log`. It is a no-op outside GitHub Actions. Masks are applied again on every run,
+  including a `-From` resume.
+- `-ExtraTag` takes a bare tag (`26.5-r123` → `<repo>:26.5-r123`) or a full reference (anything with `/` or `:`), so
+  CI can tag straight into `ghcr.io/<owner>/...` without a separate `docker tag` step.
+- License removal on seal: the agent appends every license item it places to `C:\sls\runtime-placed.txt`
+  (`user:<name>`, `file:<path>`). `Seal-Vm` (both Light and full) removes those files, the user and its profile, then
+  deletes the list. Integration test on `sls-server:26.5` (new guest scripts bind-mounted): the file and user were
+  placed, and both were gone after `Seal-Vm -Phase 1 -Light`. A config image seeded with `-LicenseFile` therefore
+  doesn't carry the license.
+- `-MaxDiskLayerGB` (W3.5) landed in this commit together with the other new build parameters.
+
+**W3 (migration coverage), `mraj-sls-container` `bf54851`**
+
+- The default build installs all four products; `-Packages ni-systemlink-server` keeps a server-only build (feeds
+  derived the same way). Explicit `-Feeds` still override the derivation.
+- Coverage check (`Test-SlsServiceCoverage` in the testkit): each row is `ok` (2xx), `license` (402/403) or `failed`.
+  Strictness: the build's Verify stage fails only when all three modules are in the package list, and
+  `Test-SlsRuntime` is strict only when the image's `com.ni.sls.products` label lists the test and asset modules.
+  Server-only images log the check and pass.
+- Routes confirmed on the server-only `s2b` image: workspaces, users and files (200). Test Monitor, assets,
+  states and systems return 404 there, as expected without modules. Feeds returned 404 on `nifeed/v1/feeds`
+  and was changed to `nirepo/v1/feeds` (to confirm in W4.3).
+- Agent ready condition: it now also waits for every automatic service whose binary is under `\National Instruments\`
+  (computed once at agent start), with a 180 s grace after the core services. A module service that stops by design
+  (for example a run-once service) doesn't block ready; it is logged and listed in `ready.json` `servicesNotRunning`.
+- Seal phase 2 stops every running NI-path service, and waits for `postgres` / `pg_ctl` processes before shutdown so
+  the database is flushed cleanly into the image.
