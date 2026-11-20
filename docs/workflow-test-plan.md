@@ -18,7 +18,7 @@ Status legend: `[ ]` open, `[x]` done, `[~]` partial / deviates (see note).
 | # | Decision |
 |---|----------|
 | D1 | `rajsite/sls-test` is **public**; GHCR packages stay **private**. Publishing the tooling is approved (the end state is a public repo). |
-| D2 | Runner: `ubuntu-latest` (public repo = 4 vCPU / 16 GB RAM / 14 GB SSD + `/mnt` temp disk, KVM available). Confirmed by the probe (W0). |
+| D2 | Runner: `ubuntu-latest` (public repo = 4 vCPU / 16 GB RAM, KVM available). Probe (W0.3): Ubuntu 26.04, one 150 GB disk with 88 GB free, no separate `/mnt` disk, pwsh 7.6. |
 | D3 | `build-images` runs **only via `workflow_dispatch`**. No schedule. |
 | D4 | One admin password for every image: repo secret `SLS_ADMIN_PASSWORD` → `SLS_BUILD_ADMIN_PASSWORD` at build. Consumers never reset it (no `SLS_ADMIN_PASSWORD` at run time). |
 | D5 | Source of truth for the tooling stays `C:\dev\azdo\mraj-sls-container` (commits there stay local, not pushed). It is copied into `sls-test/sls/` by a sync script that records the source commit. Pushing `rajsite/sls-test` is required to run the workflows. |
@@ -139,34 +139,72 @@ Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, 
   - print `nproc`, `free -g`, `df -h / /mnt`, `ls -l /dev/kvm`, `pwsh --version`
   - print `docker info` (storage driver, data root, cgroup)
   - run `docker run --rm --device /dev/kvm alpine:3 test -c /dev/kvm`
-- [ ] W0.3 Push, run the probe, record results in §7. Gate: KVM usable in containers, ≥ 16 GB RAM, and `/mnt` plus freed `/` can give Docker ≥ 60 GB.
-- [ ] W0.4 `.github/actions/sls-host-prep/action.yml` (composite):
+- [x] W0.3 Push, run the probe, record results in §7. Gate: KVM usable in containers, ≥ 16 GB RAM, and `/mnt` plus freed `/` can give Docker ≥ 60 GB.
+  Passed ([run 44826141525](https://github.com/rajsite/sls-test/actions/runs/44826141525)): KVM and TUN usable in
+  containers, 15 GiB RAM (16 GB), 87 GB free for Docker with no prep. The runner image has changed since the plan was
+  written: one 150 GB root disk, no `/mnt` temp disk.
+- [x] W0.4 `.github/actions/sls-host-prep/action.yml` (composite):
+  - [~] Reclaiming space is conditional: it runs only when Docker has less than `min-free-gb` (default 60). The
+    probe found 87 GB free with no prep, so a normal build skips it. Order when below the minimum: move the data root
+    to `/mnt/docker` if `/mnt` is a separate, larger filesystem (not the case on the current image); then remove the
+    toolchains listed below; then fail if still short.
   - free `/`: remove `/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/share/boost`, `/opt/hostedtoolcache/CodeQL`; `docker image prune -af`
   - move the Docker data root to `/mnt/docker` (`daemon.json`, restart docker). Fallback if `/mnt` is too small: an LVM volume over the free space of `/` and `/mnt` (as `easimon/maximize-build-space` does)
   - check `/dev/kvm` and `/dev/net/tun` from a container
   - `docker login ghcr.io` with `GITHUB_TOKEN` (input `registry-login`)
-  - optional input `license-b64` → `$RUNNER_TEMP/sls-licenses/*.lic`, path exported as `SLS_LICENSE_DIR`
-  - print a one-line host summary (CPU, RAM, Docker free GB)
-- [ ] W0.5 Make the probe call `sls-host-prep`; check Docker free space after prep. Commit and push.
+  - optional input `license-b64` → `$RUNNER_TEMP/sls-licenses/sls.lic` (folder 700, file 600), path exported as `SLS_LICENSE_DIR`
+  - print a one-line host summary (CPU, RAM, Docker free GB), also to the job summary
+- [x] W0.5 Make the probe call `sls-host-prep`; check Docker free space after prep. Commit and push.
+  - [run 44826397722](https://github.com/rajsite/sls-test/actions/runs/44826397722) (`min-free-gb=60`): no reclaim, prep 2 s.
+  - [run 44826401824](https://github.com/rajsite/sls-test/actions/runs/44826401824) (`min-free-gb=100`): reclaim path,
+    87 → 112 GB free in 202 s. GHCR login, license staging (dummy value) and the `docker-free-gb` output verified.
 
 ### W1. Linux compatibility of the tooling (in `mraj-sls-container`, local commits)
 
-The tooling has only run in pwsh on Windows against Docker Desktop. On Linux, pwsh normalizes `\` in cmdlet paths
-but **not** in arguments passed to native commands such as `docker`.
+The tooling has only run in pwsh on Windows against Docker Desktop. The plan assumed Linux pwsh would pass `\` through
+to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path` converts `\` to `/`, and cmdlets
+(`New-Item`, `Set-Content`, `Copy-Item`, `Test-Path`) accept raw `"$dir\sub"` strings. Only raw `\` strings passed
+**directly** to a native command or a .NET API break. The host code already builds every such argument with
+`Join-Path`, so the Linux changes were small.
 
-- [ ] W1.1 Install pwsh 7.5 in WSL Ubuntu (Microsoft package repo); confirm `docker` there reaches an engine with `/dev/kvm`.
-- [ ] W1.2 Fix host-side paths passed to native commands. Known spots:
+- [x] W1.1 Install pwsh 7.5 in WSL Ubuntu (Microsoft package repo); confirm `docker` there reaches an engine with `/dev/kvm`.
+  `[~]` The repo now ships pwsh 7.7.0 (installed as root via `wsl -u root`; the WSL user has no passwordless sudo).
+  WSL `docker` uses the Docker Desktop engine (887 GB free); `/dev/kvm` and `/dev/net/tun` work in containers.
+- [x] W1.2 Fix host-side paths passed to native commands. Known spots:
   - `build/stages/Install.ps1`: `image\bin\.`, `image\guest\.`, `build\guest\install.bat`, `build\guest\*.ps1`
   - `build/New-SlsConfigImage.ps1`: `image\config.Dockerfile`, `out\configs\<name>`
   - `build/Build-SlsImage.ps1`, `build/SlsBuild.psm1`, `build/Test-SlsRuntime.ps1`: `out\builds\…`, `testkit\SlsTestKit.psm1`, `out\runtime-tests\…`
   - `testkit/SlsTestKit.psm1`: license temp folder and `/licenses` mount path
   - Use multi-segment `Join-Path` (or `/`), which works on both OSes. Guest-side strings (`C:\…`, run inside Windows) stay as they are.
-- [ ] W1.3 Review the remaining host code for Windows-only assumptions:
-  - `$env:TEMP` / `LOCALAPPDATA` (use `[IO.Path]::GetTempPath()`), `.exe` names, host `Get-CimInstance`
-  - CRLF in files copied into the Linux container
-  - file modes of `image/bin/*` and `image/*.sh`
-- [ ] W1.4 `Test-SlsDockerHost`: keep the in-container `df` (it measures the Docker data root, which is right for `/mnt/docker`); add `Build-SlsImage.ps1 -MinFreeGB` (env `SLS_BUILD_MIN_FREE_GB`).
-- [ ] W1.5 Commit (no push). Runtime validation happens in W4 together with the module build.
+  - `[~]` Result: every spot listed above goes through `Join-Path`, which already converts the separators, so no
+    change was needed. Two error messages in `Install.ps1` built paths as `"$dir\file"`; they now use `Join-Path` so
+    Linux messages don't mix separators. The testkit license folder already uses `[IO.Path]::GetTempPath()`.
+- [x] W1.3 Review the remaining host code for Windows-only assumptions:
+  - `$env:TEMP` / `LOCALAPPDATA` (use `[IO.Path]::GetTempPath()`), `.exe` names, host `Get-CimInstance`.
+    None in host code: every hit is in guest scripts, or in guest script blocks inside `Test-SlsRuntime.ps1`
+    (`$env:ProgramData`, `powershell.exe`, `Get-CimInstance`).
+  - CRLF in files copied into the Linux container: `*.sh`, `Dockerfile` and `image/bin/*` are already LF
+    (`.gitattributes`); `Invoke-SlsHelper` strips `\r` from its scripts. **Found:** a Linux checkout would make
+    `build/guest/install.bat` LF-only, which `cmd.exe` doesn't reliably support. Fixed by `*.bat text eol=crlf` in both
+    repos.
+  - File modes of `image/bin/*` and `image/*.sh` are 644 in git. That is fine: `image/Dockerfile` uses
+    `COPY --chmod=755`, and the Install stage runs `chmod 755 /usr/local/bin/sls-*` after `docker cp`.
+  - `Test-SlsDockerHost` messages no longer say WSL2 only.
+- [x] W1.4 `Test-SlsDockerHost`: keep the in-container `df` (it measures the Docker data root, which is right for `/mnt/docker`); add `Build-SlsImage.ps1 -MinFreeGB` (env `SLS_BUILD_MIN_FREE_GB`).
+  README build section documents Linux hosts and `-MinFreeGB`.
+- [x] W1.5 Commit (no push). Runtime validation happens in W4 together with the module build.
+  `mraj-sls-container` commit `9e3466f`. Smoke tests ran early from a WSL-native clone, to mimic a CI checkout
+  (`install.bat` CRLF, scripts LF):
+  - **Install-stage host side:** `Build-SlsImage.ps1 -To Install` was stopped once the VM started. Preflight (887 GB),
+    feed and NIPM URL checks, OEM folder (`install.bat` with CRLF, guest scripts, config.json), `sls-*` tools
+    (mode 755) and `/shared/guest` were all correct, and `-Cleanup` removed everything.
+  - **Configuration image:** `New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name w1demo -Seed configs/demo/Seed.ps1`
+    passed in 3.3 min (healthy 59 s, seal 77 s, 16.7 MB layer, verify passed). Credential from
+    `SLS_BUILD_ADMIN_PASSWORD`, as in CI.
+  - **Testkit:** `Start-SlsServer -LicenseFile -LicenseUser` (temp folder under `/tmp`, `/licenses` mount, user
+    created, file placed), `Invoke-SlsApi`, `Invoke-SlsGuest`, `Save-SlsLogs` to a Linux folder, and `Stop-SlsServer`
+    (license folder removed) all passed.
+  - Not covered yet: the guest install and the Seal/Convert/Image/Verify stages on Linux; they run in W4.
 
 ### W2. CI hooks in the tooling (in `mraj-sls-container`, local commits)
 
@@ -454,8 +492,8 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 
 | Item | Value |
 |------|-------|
-| Probe: CPU / RAM / `/` free / `/mnt` free / KVM | |
-| Docker free after host prep | |
+| Probe: CPU / RAM / `/` free / `/mnt` free / KVM | 4 vCPU / 15 GiB (+3 GB swap file) / 88 GB of 145 GB / no separate `/mnt` / KVM + TUN usable in containers. Ubuntu 26.04.1, kernel 7.0 azure, Docker 29.4.2 (overlayfs, cgroup v2), pwsh 7.6.10 |
+| Docker free after host prep | 87 GB with no reclaim (2 s); 112 GB with reclaim (202 s) |
 | Products and versions installed | |
 | Base build time: WSL (4 vCPU) / GitHub | |
 | Disk layer (`base.qcow2`) size, with modules | |
@@ -476,7 +514,7 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 |------|------------|
 | Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2) |
 | Modules blocked without a license | Checked in W4.4; user-based license file via secret and `/licenses` mount (never baked in, never uploaded) |
-| Docker can't get ≥ 60 GB on the hosted runner | `/mnt` data root and a freed `/`; LVM over both; tune `-MinFreeGB` after measuring the real peak |
+| Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
 | 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM chosen in W4.3 |
 | Build time on 4 vCPU with modules | Measured in W4.1; job timeout 300 min (hosted limit 6 h) |
 | Large-layer push to GHCR stalls | Push retries (W6.3); measured in W8.7 |
@@ -495,3 +533,38 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 - A second source SLS version (e.g. an older release) to exercise migration from more than one source version.
 - Moving the tooling's source of truth to a public repo and consuming it as a submodule or release instead of a copy.
 - Azure DevOps + JFrog version of the same flow (root `implementation-plan.md` F1–F6 in `mraj-sls-container`).
+- Pin the runner label (for example `ubuntu-26.04`) once the workflows are green, so a future `ubuntu-latest` switch
+  can't change disk layout, kernel or pwsh under the build (§10, W0).
+
+## 10. Implementation notes and considerations (log)
+
+Notes recorded during implementation that affect later steps.
+
+**W0 (runner, host prep)**
+
+- The hosted runner changed since planning: `ubuntu-latest` is Ubuntu 26.04 with one 150 GB root disk (88 GB free) and
+  no `/mnt` temp disk. Moving the data root isn't needed; `sls-host-prep` keeps that branch only for runner images
+  that have a separate, larger `/mnt`.
+- Space reclaim (toolchain removal) costs about 3.4 min and gives about 25 GB. It runs only below `min-free-gb`
+  (default 60). If W4 shows the peak build need is above about 85 GB, raise `min-free-gb` in `build-images` and accept
+  the 3.4 min.
+- RAM: 15 GiB plus a 3 GB swap file. The planned `-Ram 12G` build VM leaves about 3 GiB for the host, Docker and
+  pwsh; W4.1 should watch for swapping (fallback `-Ram 10G`, §8).
+- pwsh versions differ: runner 7.6.10, WSL 7.7.0, Windows dev box 7.5.4. The tooling requires 7.2+; nothing
+  version-specific found.
+- `GITHUB_TOKEN` login to ghcr.io works with `packages: read`. Pushing needs `packages: write` in `build-images` (W8).
+- The dummy license in `probe.yml` (base64 of `probe-dummy-license`) is not a secret. It only exercises staging; real
+  licenses come from the `SLS_LICENSE_FILE_B64` secret.
+
+**W1 (Linux tooling)**
+
+- Linux pwsh normalizes `\` in `Join-Path` and cmdlets. Rule for new host code: build paths with `Join-Path` (or
+  `/`); never give raw `"$dir\x"` strings to native commands or .NET APIs. A review check for W2+ changes.
+- `*.bat` must stay CRLF on Linux checkouts (`.gitattributes` in both repos). The W6 sync must keep that attribute
+  in `sls-test/.gitattributes`.
+- W6.1 consideration: sync from the committed tree (`git archive HEAD` of the needed folders) rather than the Windows
+  working tree. It copies only committed content (no `out/`, no uncommitted edits), avoids Windows autocrlf working
+  copies, and makes `SOURCE.md`'s commit exact.
+- WSL setup for W4: pwsh is installed system-wide. Build from a WSL-native clone (`git clone /mnt/c/dev/azdo/mraj-sls-container ~/sls`)
+  so the checkout matches CI; a build from `/mnt/c` would use the Windows working copy and slower 9p bind mounts.
+- Not yet validated on Linux: the guest install and the Seal/Convert/Image/Verify stages (W4).
