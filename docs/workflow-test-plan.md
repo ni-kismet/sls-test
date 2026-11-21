@@ -236,13 +236,21 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 
 ### W4. Full local build on Linux (WSL), modules included
 
-- [ ] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
-- [ ] W4.2 If the disk layer gate fails: apply the §2 mitigations (seal cleanup first, two-layer split if still over) and rebuild.
-- [ ] W4.3 Boot the image; confirm every module UI page loads (Test Monitor, Assets, Package Repository, Systems, States) and the §W3.3 endpoints answer. Record boot-to-healthy time and guest RAM use (8 GB vs. 10 GB).
-- [ ] W4.4 Licensing check: with no license file, do the module APIs/UIs work (evaluation), or are they blocked? Record the outcome. If blocked: get a user-based license file, store it as `SLS_LICENSE_FILE_B64`, and re-check with `-LicenseFile`.
+> **Paused here (status and resume steps: §10 "W4 (in progress)").** Install, Seal, Convert and Image passed for
+> `wsl-mod1`; Verify fails on Test Monitor 503/504 (still starting), and the runtime image bugchecks with dockur's
+> default Hyper-V enlightenments. Next: W4.1a–W4.1c, then resume `-From Image`.
+
+- [~] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
+  - Install 26.4 min, Seal 11.8 min (after fixes), Convert 0.5 min, Image 1.9 min; Verify failed (W4.1c). Fixes so far in `mraj-sls-container` `218b025` (build VM `HV=N`, panic detection, `/oem` via `docker cp`) and `6b928cc` (seal `mongod --repair`, crash dump purge).
+  - [ ] W4.1a Runtime image: `ENV HV=N` in `image/Dockerfile` (override `-e HV=Y`); `start.sh` prepends `-action panic=pause` to `ARGUMENTS` and starts `sls-panic-watch` in the background; `healthcheck.sh` fails when `/storage/sls-panic.txt` exists. Document in README / root `implementation-plan.md`.
+  - [ ] W4.1b `Test-SlsServiceCoverage -WaitSec <n>`: retry rows with status 0/502/503/504 until the deadline (Test Monitor answered 200 about 215 s after start, 504 at 192 s). Use it in `build/stages/Verify.ps1` and `build/Test-SlsRuntime.ps1` (about 300 s).
+  - [ ] W4.1c Commit W4.1a/b locally; sync `~/sls`; resume `-BuildId wsl-mod1 -From Image` (rebuilds the small layers on the kept disk layer image, then Verify).
+- [x] W4.2 If the disk layer gate fails: apply the §2 mitigations (seal cleanup first, two-layer split if still over) and rebuild. Not needed: `base.qcow2` 9.23 GB, under the 9.5 GB gate (only 0.27 GB of headroom, §8).
+- [ ] W4.3 Boot the image; confirm every module UI page loads (Test Monitor, Assets, Package Repository, Systems, States) and the §W3.3 endpoints answer. Record boot-to-healthy time and guest RAM use (8 GB vs. 10 GB). Partial: all W3.3 routes confirmed in the failed Verify (below); Test Monitor 200 once started; boot to healthy about 180–215 s at 8 GB.
+- [ ] W4.4 Licensing check: with no license file, do the module APIs/UIs work (evaluation), or are they blocked? Record the outcome. If blocked: get a user-based license file, store it as `SLS_LICENSE_FILE_B64`, and re-check with `-LicenseFile`. Early signal: no 402/403 from any module API without a license.
 - [ ] W4.5 `Test-SlsRuntime.ps1` and `testkit/examples/Test-SlsServer.ps1` in WSL against the new image: green.
 - [ ] W4.6 Re-run `Test-SlsRuntime.ps1` once from Windows pwsh against the same image (no regression on Windows).
-- [ ] W4.7 Commit any fixes (no push).
+- [~] W4.7 Commit any fixes (no push). `218b025`, `6b928cc` committed locally; W4.1a/b pending.
 
 ### W5. Seed configurations (in `mraj-sls-container`, local commits)
 
@@ -500,13 +508,13 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 |------|-------|
 | Probe: CPU / RAM / `/` free / `/mnt` free / KVM | 4 vCPU / 15 GiB (+3 GB swap file) / 88 GB of 145 GB / no separate `/mnt` / KVM + TUN usable in containers. Ubuntu 26.04.1, kernel 7.0 azure, Docker 29.4.2 (overlayfs, cgroup v2), pwsh 7.6.10 |
 | Docker free after host prep | 87 GB with no reclaim (2 s); 112 GB with reclaim (202 s) |
-| Products and versions installed | |
-| Base build time: WSL (4 vCPU) / GitHub | |
-| Disk layer (`base.qcow2`) size, with modules | |
-| Image size, base / demo / migration layers | |
-| Boot to healthy, guest RAM used | |
-| Module licensing outcome (unlicensed / license file needed) | |
-| Coverage endpoints (resource → route → status) | |
+| Products and versions installed | ni-systemlink-server, -software-config-module, -test-module, -asset-module 26.5.1.49157-0+f5; NIPM 26.8.0.49285; Windows Server 2022 build 20348.587 (eval expires 2027-05-19) |
+| Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 1.9 min (+ Verify ≈3–5 min); end-to-end time not yet measured in one run (resumed several times) / GitHub: W8 |
+| Disk layer (`base.qcow2`) size, with modules | 9.23 GB (gate 9.5 GB); `data.img` allocated 20.35 GB after the seal |
+| Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB) / W5 / W5 |
+| Boot to healthy, guest RAM used | 8 GB guest: healthy about 180–190 s, Test Monitor 200 at about 215 s (504 at 192 s); RAM use not yet measured |
+| Module licensing outcome (unlicensed / license file needed) | Early: no 402/403 from any module API without a license; UI check pending (W4.4) |
+| Coverage endpoints (resource → route → status) | workspaces `GET niuser/v1/workspaces` 200; users `POST niuser/v1/users/query` 200; files `GET nifile/v1/service-groups/Default/files` 200; Test Monitor `POST nitestmonitor/v2/query-products` / `query-results` / `query-steps` 503 at 130 s, 200 at 215 s; feeds `GET nirepo/v1/feeds` 200; assets `POST niapm/v1/query-assets` 200; states `GET nisystemsstate/v1/states` 200; systems `POST nisysmgmt/v1/query-systems` 200 |
 | Base push time | |
 | Seed job time (demo / migration) | |
 | e2e job time (pull / healthy / tests) | |
@@ -518,7 +526,9 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 
 | Risk | Mitigation |
 |------|------------|
-| Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2) |
+| Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it |
+| Windows guest bugchecks on nested KVM (stop 0x4A) with dockur's Hyper-V enlightenments | Seen on the WSL2 engine (AMD host) in the build seal and at run time (about 500 s after start); GitHub runners are also nested (Azure). Build VMs use `HV=N` (done); runtime image `HV=N` in W4.1a. QEMU `panic=pause` + `sls-panic-watch` make a crash visible instead of a silent exit 0 |
+| Module services start after "healthy" | Test Monitor answers 503/504 for about 30 s after healthy; coverage checks and e2e tests wait for it (W4.1b; e2e: wait on a module API before the tests) |
 | Modules blocked without a license | Checked in W4.4; user-based license file via secret and `/licenses` mount (never baked in, never uploaded) |
 | Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
 | 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM chosen in W4.3 |
@@ -606,3 +616,56 @@ Notes recorded during implementation that affect later steps.
   (for example a run-once service) doesn't block ready; it is logged and listed in `ready.json` `servicesNotRunning`.
 - Seal phase 2 stops every running NI-path service, and waits for `postgres` / `pg_ctl` processes before shutdown so
   the database is flushed cleanly into the image.
+
+**W4 (in progress; paused at W4.1), `mraj-sls-container` `218b025`, `6b928cc`**
+
+Status at the pause:
+
+- Build `wsl-mod1` (WSL clone `~/sls` at `6b928cc`, `-Ram 12G -Cpu 4 -Repository sls-server-mod`): Install, Seal,
+  Convert and Image passed; Verify failed on Test Monitor (503 at 130 s after start). Image `sls-server-mod:26.5`
+  (= `:26.5.1-20261121`) exists but still has the old runtime defaults (Hyper-V enlightenments on).
+- Kept for the resume: the stopped container `sls-build-wsl-mod1` and volumes `sls-build-wsl-mod1-{storage,shared,images}`
+  (the build container was recreated by hand during diagnosis with `HV=N` and `-action panic=none`, without `/oem`),
+  the disk layer image `sls-server-disk:wsl-mod1`, and `~/sls/out/builds/wsl-mod1` (`context.json`, `build.log`,
+  `credentials.json` with the image's admin password).
+- Both repos are committed with a clean working tree; nothing pushed. `sls-test` is ahead of origin.
+
+Findings:
+
+- **Guest bugchecks (stop 0x4A, IRQL_GT_ZERO_AT_SYSTEM_SERVICE) on nested KVM.** On the WSL2 engine (AMD Ryzen AI
+  7 PRO 350 host), dockur adds `hv_passthrough` to `-cpu`. With it, Windows crashed three times during the seal
+  (phase 1 reboot, DISM, Service Manager stop). With QEMU's default `-action panic=shutdown` plus `hv-crash`, QEMU
+  then exits 0: the container logs "Shutdown completed!", with no dump and event 41 BugcheckCode 0. That looks like
+  a power off and broke the seal's waits.
+  - With `HV=N` the seal passed.
+  - A/B at run time (8 GB, 4 cores, both with `panic=pause`): with default `HV` the guest panicked about 500 s
+    after start (`VM status: paused (guest-panicked)`); with `HV=N` it stayed healthy past 580 s.
+  - A plain `docker run` of the image exited 0 the same way after about 2 min.
+  - The screendump at a `panic=pause` stop shows the last frame before the blue screen, so `guest-panicked` is the
+    signal, not the picture.
+  - The crash dump (`MEMORY.DMP`) could not be analyzed (no debugger on the host).
+- **Unclean MongoDB stop with modules (reproduced twice).** Stopping the Service Manager closes about 270 mongod
+  connections. NI's `mongodb.conf` has `traceAllExceptions: true`, so each disconnect logs a backtrace, and the
+  NoSqlDatabase wrapper kills mongod about 8–12 s into the stop. The log ends mid-backtrace and `mongod.lock` keeps
+  the PID. Seal phase 2 now runs `mongod --repair` (2.1 s, exit 0, empty lock).
+- **`/oem` bind mount broke resumes.** Install deleted the bind source, and Docker Desktop's WSL bind paths exist
+  only for the creating session, so a stopped build container could not start again. Install now uses `docker cp`.
+- Seal on this host: phase 1 about 39 s, reboot to ready 85–95 s, Service Manager stop about 31 s, retrim about
+  3 min (107 GB trimmed). The pre-seal API probe needs running services: after a failed phase 2, `docker stop` the
+  build container and resume `-From Seal` (it starts the VM again).
+- Test Monitor needs about 30 s after "healthy" (8 GB guest). Other module routes answer at healthy.
+
+Resume (W4.1a → W4.7):
+
+1. W4.1a/b in `C:\dev\azdo\mraj-sls-container` (see the W4.1 sub-items), then commit locally.
+2. Sync and resume in WSL:
+   ```bash
+   cd ~/sls && git fetch -q /mnt/c/dev/azdo/mraj-sls-container HEAD && git merge --ff-only FETCH_HEAD
+   pwsh -NoProfile -File build/Build-SlsImage.ps1 -BuildId wsl-mod1 -From Image
+   ```
+   (From Windows: `%TEMP%\w4-resume.sh` runs that resume line: `$wp = (wsl -d Ubuntu -- wslpath -a "$env:TEMP/w4-resume.sh").Trim(); wsl -d Ubuntu -- bash $wp`.)
+3. W4.3–W4.6 against `sls-server-mod:26.5`. The admin password is in `~/sls/out/builds/wsl-mod1/credentials.json`;
+   pass it as `SLS_BUILD_ADMIN_PASSWORD` (from Windows via `WSLENV`).
+4. Update §7 (end-to-end time, image size, RAM), mark W4, and commit both repos locally.
+5. Clean up: `pwsh build/Build-SlsImage.ps1 -BuildId wsl-mod1 -Cleanup` in `~/sls` (container, volumes, disk
+   layer tag); `%TEMP%\w4-*.sh`, `%TEMP%\w4seal`, `%TEMP%\w4diag`. Keep `sls-server-mod:26.5` for W5.
