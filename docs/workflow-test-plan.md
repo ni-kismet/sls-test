@@ -236,21 +236,21 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 
 ### W4. Full local build on Linux (WSL), modules included
 
-> **Paused here (status and resume steps: §10 "W4 (in progress)").** Install, Seal, Convert and Image passed for
-> `wsl-mod1`; Verify fails on Test Monitor 503/504 (still starting), and the runtime image bugchecks with dockur's
-> default Hyper-V enlightenments. Next: W4.1a–W4.1c, then resume `-From Image`.
+> **Done (local commits, nothing pushed).** The image builds and passes Verify and the runtime tests on WSL and Windows.
+> Open platform risk: on this nested-KVM host (AMD, WSL2) the Windows guest still bugchecks or hangs now and then (§8,
+> §10 W4); W8 measures it on GitHub runners.
 
-- [~] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
-  - Install 26.4 min, Seal 11.8 min (after fixes), Convert 0.5 min, Image 1.9 min; Verify failed (W4.1c). Fixes so far in `mraj-sls-container` `218b025` (build VM `HV=N`, panic detection, `/oem` via `docker cp`) and `6b928cc` (seal `mongod --repair`, crash dump purge).
-  - [ ] W4.1a Runtime image: `ENV HV=N` in `image/Dockerfile` (override `-e HV=Y`); `start.sh` prepends `-action panic=pause` to `ARGUMENTS` and starts `sls-panic-watch` in the background; `healthcheck.sh` fails when `/storage/sls-panic.txt` exists. Document in README / root `implementation-plan.md`.
-  - [ ] W4.1b `Test-SlsServiceCoverage -WaitSec <n>`: retry rows with status 0/502/503/504 until the deadline (Test Monitor answered 200 about 215 s after start, 504 at 192 s). Use it in `build/stages/Verify.ps1` and `build/Test-SlsRuntime.ps1` (about 300 s).
-  - [ ] W4.1c Commit W4.1a/b locally; sync `~/sls`; resume `-BuildId wsl-mod1 -From Image` (rebuilds the small layers on the kept disk layer image, then Verify).
+- [x] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
+  - Install 26.4 min, Seal 11.8 min (after fixes), Convert 0.5 min, Image 2.4 min, Verify 3.9 min (sum of stage times 45 min). Fixes in `mraj-sls-container` `218b025` (build VM `HV=N`, panic detection, `/oem` via `docker cp`) and `6b928cc` (seal `mongod --repair`, crash dump purge).
+  - [x] W4.1a Runtime image: `ENV HV=N` in `image/Dockerfile` (override `-e HV=Y`); `start.sh` prepends `-action panic=pause` to `ARGUMENTS` and starts `sls-panic-watch` in the background; `healthcheck.sh` fails when `/storage/sls-panic.txt` exists. Document in README / root `implementation-plan.md`. `72c7581`; `7ecb071` adds `hv-crash` to `CPU_FLAGS` when `HV=N` (without it a bugcheck left the VM "running" on a blue screen); verified with an injected NMI.
+  - [x] W4.1b `Test-SlsServiceCoverage -WaitSec <n>`: retry rows with status 0/502/503/504 until the deadline (Test Monitor answered 200 about 215 s after start, 504 at 192 s). Use it in `build/stages/Verify.ps1` and `build/Test-SlsRuntime.ps1` (about 300 s). `72c7581`.
+  - [x] W4.1c Commit W4.1a/b locally; sync `~/sls`; resume `-BuildId wsl-mod1 -From Image` (rebuilds the small layers on the kept disk layer image, then Verify). First resume: the guest bugchecked during Verify (dump analyzed, §10); second resume at `7ecb071`: Image 2.4 min, Verify passed (healthy 219 s, all 10 coverage rows 200 within 11 s).
 - [x] W4.2 If the disk layer gate fails: apply the §2 mitigations (seal cleanup first, two-layer split if still over) and rebuild. Not needed: `base.qcow2` 9.23 GB, under the 9.5 GB gate (only 0.27 GB of headroom, §8).
-- [ ] W4.3 Boot the image; confirm every module UI page loads (Test Monitor, Assets, Package Repository, Systems, States) and the §W3.3 endpoints answer. Record boot-to-healthy time and guest RAM use (8 GB vs. 10 GB). Partial: all W3.3 routes confirmed in the failed Verify (below); Test Monitor 200 once started; boot to healthy about 180–215 s at 8 GB.
-- [ ] W4.4 Licensing check: with no license file, do the module APIs/UIs work (evaluation), or are they blocked? Record the outcome. If blocked: get a user-based license file, store it as `SLS_LICENSE_FILE_B64`, and re-check with `-LicenseFile`. Early signal: no 402/403 from any module API without a license.
-- [ ] W4.5 `Test-SlsRuntime.ps1` and `testkit/examples/Test-SlsServer.ps1` in WSL against the new image: green.
-- [ ] W4.6 Re-run `Test-SlsRuntime.ps1` once from Windows pwsh against the same image (no regression on Windows).
-- [~] W4.7 Commit any fixes (no push). `218b025`, `6b928cc` committed locally; W4.1a/b pending.
+- [x] W4.3 Boot the image; confirm every module UI page loads (Test Monitor, Assets, Package Repository, Systems, States) and the §W3.3 endpoints answer. Record boot-to-healthy time and guest RAM use (8 GB vs. 10 GB). Playwright login + Test Insights (dashboard, results, products), Assets, Package Repository, Systems, States, Files, Workspaces, Users, Licenses all render; the only failing request is `/nidataanalyzer` 404 (not installed, out of scope). Healthy 121–150 s alone, 194–219 s next to other VMs; 8 GB guest: 4.8 GB used, 3.2 GB free, commit 7.0 of 9.9 GB → **8G** is enough.
+- [x] W4.4 Licensing check: with no license file, do the module APIs/UIs work (evaluation), or are they blocked? Record the outcome. If blocked: get a user-based license file, store it as `SLS_LICENSE_FILE_B64`, and re-check with `-LicenseFile`. **Outcome: they work (evaluation)** — "Trial" (5 users, 10 systems), Test/Asset/Advanced evaluations "expire in 44 days" (45 days from the image build). After expiry (guest clock +50 days): UI pages show "… Module is not licensed" and are disabled, but all APIs still answer, including creates. No license needed for W5–W9 while the image is < ~45 days old; `SLS_LICENSE_FILE_B64` stays optional (§8).
+- [x] W4.5 `Test-SlsRuntime.ps1` and `testkit/examples/Test-SlsServer.ps1` in WSL against the new image: green. 14/14 in 546 s; example 4/4 in 172 s.
+- [x] W4.6 Re-run `Test-SlsRuntime.ps1` once from Windows pwsh against the same image (no regression on Windows). 14/14 in 538 s.
+- [x] W4.7 Commit any fixes (no push). `mraj-sls-container`: `218b025`, `6b928cc`, `5497846`, `72c7581`, `7ecb071`, `958237c`, `4993b68`, `0d5db34`.
 
 ### W5. Seed configurations (in `mraj-sls-container`, local commits)
 
@@ -347,14 +347,14 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
   1. `docker login`
   2. `docker buildx imagetools create -t $REPO:26.5 -t $REPO:<x.y.z> <base digest>`; same for `26.5-<cfg>`
   3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
-  4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry
-- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown.
+  4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry, SystemLink module evaluation end (build date + 45 days, W4.4)
+- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
 - [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
 
 ### W9. e2e workflows
 
 - [ ] W9.1 `.github/workflows/_sls-e2e.yml` (`workflow_call`):
-  - inputs `image`, `project`, `ram` (default from W4.3, 8G or 10G), `cpu` (default `4`); secrets `SLS_ADMIN_PASSWORD`, optional `SLS_LICENSE_FILE_B64`
+  - inputs `image`, `project`, `ram` (default `8G`, W4.3), `cpu` (default `4`); secrets `SLS_ADMIN_PASSWORD`, optional `SLS_LICENSE_FILE_B64`
   - `permissions: { contents: read, packages: read }`; `timeout-minutes: 45`
   - Steps:
     1. checkout; `sls-host-prep`; `docker pull <image>` (timed)
@@ -509,11 +509,11 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Probe: CPU / RAM / `/` free / `/mnt` free / KVM | 4 vCPU / 15 GiB (+3 GB swap file) / 88 GB of 145 GB / no separate `/mnt` / KVM + TUN usable in containers. Ubuntu 26.04.1, kernel 7.0 azure, Docker 29.4.2 (overlayfs, cgroup v2), pwsh 7.6.10 |
 | Docker free after host prep | 87 GB with no reclaim (2 s); 112 GB with reclaim (202 s) |
 | Products and versions installed | ni-systemlink-server, -software-config-module, -test-module, -asset-module 26.5.1.49157-0+f5; NIPM 26.8.0.49285; Windows Server 2022 build 20348.587 (eval expires 2027-05-19) |
-| Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 1.9 min (+ Verify ≈3–5 min); end-to-end time not yet measured in one run (resumed several times) / GitHub: W8 |
+| Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 2.4 min, Verify 3.9 min = 45 min of stage time (`build.json` `stagesSec`; the build was resumed several times, so no single wall-clock run) / GitHub: W8 |
 | Disk layer (`base.qcow2`) size, with modules | 9.23 GB (gate 9.5 GB); `data.img` allocated 20.35 GB after the seal |
 | Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB) / W5 / W5 |
-| Boot to healthy, guest RAM used | 8 GB guest: healthy about 180–190 s, Test Monitor 200 at about 215 s (504 at 192 s); RAM use not yet measured |
-| Module licensing outcome (unlicensed / license file needed) | Early: no 402/403 from any module API without a license; UI check pending (W4.4) |
+| Boot to healthy, guest RAM used | 8 GB guest, 4 cores: healthy 121–150 s alone, 194–219 s with other VMs running; Test Monitor up to ~30 s later (coverage waits). With `SLS_ADMIN_PASSWORD` at start: 176–194 s (password set in ~135 s). RAM 8 min after boot: 4.8 GB used, 3.2 GB free, commit 7.0 of 9.9 GB → e2e default `ram` 8G |
+| Module licensing outcome (unlicensed / license file needed) | No license needed now: "Trial" (5 users / 10 systems), Test/Asset/Advanced evaluations run 45 days from the image build. After expiry the module UI pages are disabled ("not licensed"); APIs (queries and creates) keep working |
 | Coverage endpoints (resource → route → status) | workspaces `GET niuser/v1/workspaces` 200; users `POST niuser/v1/users/query` 200; files `GET nifile/v1/service-groups/Default/files` 200; Test Monitor `POST nitestmonitor/v2/query-products` / `query-results` / `query-steps` 503 at 130 s, 200 at 215 s; feeds `GET nirepo/v1/feeds` 200; assets `POST niapm/v1/query-assets` 200; states `GET nisystemsstate/v1/states` 200; systems `POST nisysmgmt/v1/query-systems` 200 |
 | Base push time | |
 | Seed job time (demo / migration) | |
@@ -527,11 +527,11 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Risk | Mitigation |
 |------|------------|
 | Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it |
-| Windows guest bugchecks on nested KVM (stop 0x4A) with dockur's Hyper-V enlightenments | Seen on the WSL2 engine (AMD host) in the build seal and at run time (about 500 s after start); GitHub runners are also nested (Azure). Build VMs use `HV=N` (done); runtime image `HV=N` in W4.1a. QEMU `panic=pause` + `sls-panic-watch` make a crash visible instead of a silent exit 0 |
+| Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) 3 bugchecks + 1 hang in ~9 runs of 5–30 min. Dumps point at nested-SVM CPU state (CR8/IRQL, trap flag) being lost, not at a guest driver; not fixable in the image. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. GitHub runners are nested on Azure (Hyper-V) too, often AMD EPYC: W8 logs `lscpu` and measures the rate. If affected: retry a job once on a recorded bugcheck/unhealthy container, try another runner size/CPU, or self-hosted bare-metal KVM runners |
 | Module services start after "healthy" | Test Monitor answers 503/504 for about 30 s after healthy; coverage checks and e2e tests wait for it (W4.1b; e2e: wait on a module API before the tests) |
-| Modules blocked without a license | Checked in W4.4; user-based license file via secret and `/licenses` mount (never baked in, never uploaded) |
+| Module evaluation expires 45 days after the image build | W4.4: module UI pages are disabled after expiry (APIs keep working). Rebuild the image (manual dispatch) at least every ~6 weeks while UI tests run unlicensed, or provide `SLS_LICENSE_FILE_B64` (user-based license via `/licenses`, never baked in, never uploaded). Record the build date in the job summary (W8) |
 | Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
-| 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM chosen in W4.3 |
+| 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM 8G (W4.3: 4.8 GB used, 3.2 GB free) |
 | Build time on 4 vCPU with modules | Measured in W4.1; job timeout 300 min (hosted limit 6 h) |
 | Large-layer push to GHCR stalls | Push retries (W6.3); measured in W8.7 |
 | ≈8–10 GB pull in every e2e job | Accepted for the test; later: larger or self-hosted runners with a warm image cache |
@@ -617,18 +617,15 @@ Notes recorded during implementation that affect later steps.
 - Seal phase 2 stops every running NI-path service, and waits for `postgres` / `pg_ctl` processes before shutdown so
   the database is flushed cleanly into the image.
 
-**W4 (in progress; paused at W4.1), `mraj-sls-container` `218b025`, `6b928cc`**
+**W4 (done), `mraj-sls-container` `218b025`, `6b928cc`, `5497846`, `72c7581`, `7ecb071`, `958237c`, `4993b68`, `0d5db34`**
 
-Status at the pause:
+Result:
 
-- Build `wsl-mod1` (WSL clone `~/sls` at `6b928cc`, `-Ram 12G -Cpu 4 -Repository sls-server-mod`): Install, Seal,
-  Convert and Image passed; Verify failed on Test Monitor (503 at 130 s after start). Image `sls-server-mod:26.5`
-  (= `:26.5.1-20261121`) exists but still has the old runtime defaults (Hyper-V enlightenments on).
-- Kept for the resume: the stopped container `sls-build-wsl-mod1` and volumes `sls-build-wsl-mod1-{storage,shared,images}`
-  (the build container was recreated by hand during diagnosis with `HV=N` and `-action panic=none`, without `/oem`),
-  the disk layer image `sls-server-disk:wsl-mod1`, and `~/sls/out/builds/wsl-mod1` (`context.json`, `build.log`,
-  `credentials.json` with the image's admin password).
-- Both repos are committed with a clean working tree; nothing pushed. `sls-test` is ahead of origin.
+- Build `wsl-mod1` (WSL clone `~/sls`, `-Ram 12G -Cpu 4 -Repository sls-server-mod`): all stages passed after the
+  fixes below; the last resume (`-From Image` at `7ecb071`) rebuilt `sls-server-mod:26.5` (= `:26.5.1-20261121`,
+  19.40 GB) and Verify passed. The build removed its container, volumes and disk layer tag itself.
+- W4.3–W4.6 passed on that image (UI pages, RAM, licensing, runtime tests on WSL and Windows; see the checklist).
+- Both repos are committed locally; nothing pushed for W2–W4. `sls-test` is ahead of origin.
 
 Findings:
 
@@ -643,7 +640,29 @@ Findings:
   - A plain `docker run` of the image exited 0 the same way after about 2 min.
   - The screendump at a `panic=pause` stop shows the last frame before the blue screen, so `guest-panicked` is the
     signal, not the picture.
-  - The crash dump (`MEMORY.DMP`) could not be analyzed (no debugger on the host).
+  - Crash dumps were later analyzed with `cdb` from the WinDbg package (extracted, not installed): process
+    `NationalInstruments.TagService.exe`, bucket `RAISED_IRQL_FAULT_..._nt!KiSystemServiceExitPico` (a system call
+    returns at DISPATCH_LEVEL). The only non-Microsoft drivers are Red Hat's virtio ones (NI installs no kernel
+    drivers), so this points at the guest's IRQL/CR8 state being lost under nested SVM (Hyper-V L0 → WSL2 KVM L1;
+    `kvm_amd` avic/vgif/vnmi off), not at the image.
+  - **`HV=N` lowers the rate but does not fix it.** Module image, 4 vCPU / 8 GB, runs of 5–30 min: default `HV`
+    3/3 crashed within 3–9 min; `HV=N` 3 bugchecks (3.5, 19, 24 min) + 1 hang (6 min) in about 9 runs (the 19/24 min
+    pair ran with other VMs and an image build on the host). The server-only image with `HV` on ran 25 min clean.
+    QEMU's userspace irqchip, which would trap every CR8 write, is not available ("KVM does not support userspace
+    APIC").
+  - **`HV=N` hid crashes until `hv-crash` was added** (`7ecb071`): without any Hyper-V crash MSRs Windows doesn't
+    notify QEMU, `AutoReboot` is 0, so the VM sat "running" on a blue screen with the healthcheck at "starting". Now
+    `start.sh` adds `hv-crash` to `CPU_FLAGS` when `HV=N` (and `Install.ps1` does the same for the build VM).
+    Verified with an injected NMI (`echo nmi | nc -q 1 -U /run/shm/monitor.sock`): `paused (guest-panicked)`,
+    `sls-panic.txt`, `[sls] ... Windows bugcheck`, a running `sls-exec` ended (143), healthcheck 1.
+  - **Second symptom: hard hang.** Once (`HV=N`, idle, 6 min after start) the screen clock stopped, QEMU spun at
+    ~270 % CPU, HTTP and the guest agent stopped answering and Docker marked the container unhealthy; no bugcheck,
+    so nothing for `hv-crash` to report. An NMI produced a kernel dump: CPU 0 was a System worker thread at IRQL 0
+    with interrupts off, single-stepping itself forever in pool memory (`and [rsp+10h],not TF; iretq` /
+    `sub [rsp],2; iretq`, PatchGuard-style self-check code). Same class of nested-virtualization fault (trap-flag
+    / #DB state). Hangs only show up as unhealthy containers and test timeouts.
+  - Useful monitor commands for diagnosis: `info status`, `screendump /tmp/s.ppm`, `info registers -a`, `nmi`,
+    `cont`, `system_reset`; dumps come out through `\\host.lan\Data` (`/shared`).
 - **Unclean MongoDB stop with modules (reproduced twice).** Stopping the Service Manager closes about 270 mongod
   connections. NI's `mongodb.conf` has `traceAllExceptions: true`, so each disconnect logs a backtrace, and the
   NoSqlDatabase wrapper kills mongod about 8–12 s into the stop. The log ends mid-backtrace and `mongod.lock` keeps
@@ -654,18 +673,22 @@ Findings:
   3 min (107 GB trimmed). The pre-seal API probe needs running services: after a failed phase 2, `docker stop` the
   build container and resume `-From Seal` (it starts the VM again).
 - Test Monitor needs about 30 s after "healthy" (8 GB guest). Other module routes answer at healthy.
+- **SystemLink evaluation (W4.4).** Without a license file the server is "Trial" and the Test/Asset/Advanced
+  evaluations end 45 days after the install, i.e. the image build. Checked by booting with `-rtc base=` 50 days
+  ahead: Windows first set the clock back (time sync), so w32time and SSL time seeding were turned off and the guest
+  restarted (a clock jump under running services gives misleading "API Key has expired" 401s). Then the Licenses page
+  shows "Unlicensed", the module pages "… Module is not licensed" (disabled), while every API, including creates of
+  products, assets and workspaces, still answers. Implication: unlicensed UI tests need an image younger than ~45
+  days (manual rebuild) or `SLS_LICENSE_FILE_B64`; API seeding keeps working.
+- **UI login automation (for W7).** The login page's username is a combobox with an inner textbox and the "Log in"
+  button stays disabled after Playwright `fill()`; typing (`pressSequentially`) enables it, and the button must be
+  clicked (Enter doesn't submit). Routes after login are hash routes (`/#testmonitor`, `/#assetmanager`,
+  `/#packagerepository`, `/#systemsmanagement/systemsbrowser`, `/#systemsmanagement/systemstates`, `/#fileviewer`,
+  `#/security/workspaces`, `#/security/users`, `/#license`), so wait on `location.hash`, not on a navigation.
+  Test Insights requests `/nidataanalyzer/v1` (404, Data Analyzer not installed): ignore it in network assertions.
+- `SLS_ADMIN_PASSWORD` at start takes ~135 s with modules (30 s server-only), so healthy comes ~60 s later; the e2e
+  jobs use the baked password and are not affected.
 
-Resume (W4.1a → W4.7):
-
-1. W4.1a/b in `C:\dev\azdo\mraj-sls-container` (see the W4.1 sub-items), then commit locally.
-2. Sync and resume in WSL:
-   ```bash
-   cd ~/sls && git fetch -q /mnt/c/dev/azdo/mraj-sls-container HEAD && git merge --ff-only FETCH_HEAD
-   pwsh -NoProfile -File build/Build-SlsImage.ps1 -BuildId wsl-mod1 -From Image
-   ```
-   (From Windows: `%TEMP%\w4-resume.sh` runs that resume line: `$wp = (wsl -d Ubuntu -- wslpath -a "$env:TEMP/w4-resume.sh").Trim(); wsl -d Ubuntu -- bash $wp`.)
-3. W4.3–W4.6 against `sls-server-mod:26.5`. The admin password is in `~/sls/out/builds/wsl-mod1/credentials.json`;
-   pass it as `SLS_BUILD_ADMIN_PASSWORD` (from Windows via `WSLENV`).
-4. Update §7 (end-to-end time, image size, RAM), mark W4, and commit both repos locally.
-5. Clean up: `pwsh build/Build-SlsImage.ps1 -BuildId wsl-mod1 -Cleanup` in `~/sls` (container, volumes, disk
-   layer tag); `%TEMP%\w4-*.sh`, `%TEMP%\w4seal`, `%TEMP%\w4diag`. Keep `sls-server-mod:26.5` for W5.
+Leftovers kept for W5: image `sls-server-mod:26.5` (= `:26.5.1-20261121`) and `~/sls/out/builds/wsl-mod1`
+(`credentials.json` holds the image admin password; pass it as `SLS_BUILD_ADMIN_PASSWORD`). The build cleaned its
+container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were removed.
