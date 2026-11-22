@@ -44,7 +44,7 @@ jobs:
       - name: Host CPU and KVM
         run: |
           lscpu | grep -E '^(Model name|Vendor ID|Virtualization|Hypervisor vendor|CPU\(s\))'
-          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] && for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
+          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] || continue; for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
           echo "kvm: $kvm"
           echo "Host CPU: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p') (hypervisor $(lscpu | sed -n 's/^Hypervisor vendor:[[:space:]]*//p')); kvm: $kvm" >> "$GITHUB_STEP_SUMMARY"
 

@@ -64,7 +64,7 @@ jobs:
           mkdir -p "$OUT"
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
           hv=$(lscpu | sed -n 's/^Hypervisor vendor:[[:space:]]*//p')
-          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] && for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
+          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] || continue; for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
           jq -n --arg cpu "$cpu" --arg hv "$hv" --arg kvm "$kvm" --arg runner "${{ matrix.runner }}" \
             '{runner: $runner, cpu: $cpu, hypervisor: $hv, kvm: $kvm}' > "$OUT/runner.json"
           cat "$OUT/runner.json"
