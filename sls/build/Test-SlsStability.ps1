@@ -119,7 +119,7 @@ $laneCode = {
             $text = (& tesseract $ppm - 2>$null) -join "`n"
             $shot = "$Prefix-bsod.ppm"
         } else { return "see $Prefix-bsod.ppm (install tesseract-ocr to read it)" }
-        if ($text -match '(?mi)^stop(?: code)?:?\s*(.+)$') { return ($Matches[1].Trim().ToUpperInvariant() -replace '[ :]+', '_') }
+        if ($text -match '(?mi)^\W*stop(?: code)?:?\s*(.+)$') { return ($Matches[1].Trim().ToUpperInvariant() -replace '[ :]+', '_') }
         # A wedged guest can report the panic (hv-crash) and still never draw the blue screen.
         if ($text -notmatch 'ran into a problem') { return "no blue screen drawn, see $shot" }
         return "unreadable, see $shot"
