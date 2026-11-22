@@ -1,7 +1,7 @@
 name: soak-image
 
-# W4B: builds the SystemLink Server image on a hosted runner (nested KVM) and pushes it to a throwaway test package
-# for the stability soak (soak.yml). Records build attempts and Windows bugchecks during install/seal/verify.
+# W4B: builds the SystemLink Server image on a hosted runner (nested KVM) and records build attempts and Windows
+# bugchecks during install/seal/verify. Pushing (to a throwaway test package) is opt-in, see the push input.
 
 on:
   workflow_dispatch:
@@ -18,6 +18,12 @@ on:
       min-free-gb:
         description: Docker free GB required by sls-host-prep
         default: '60'
+      push:
+        description: >-
+          Push to ghcr.io/rajsite/sls-server-soak. A package first published by this public repo's GITHUB_TOKEN is
+          PUBLIC; only push after the package exists as Private (§10 W4B)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,6 +67,7 @@ jobs:
 
       - name: Push
         id: push
+        if: inputs.push
         env:
           IMAGE: ${{ steps.build.outputs.image }}
           RUN_TAG: ${{ env.REPO }}:r${{ github.run_number }}

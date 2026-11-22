@@ -119,7 +119,7 @@ Everything printed to workflow logs and every uploaded artifact is world-readabl
 | **Leak guard** | `scripts/Test-NoSecret.ps1` scans every staged directory before upload (plain files **and** the contents of `.zip` traces) for the admin password, the VM password and the license file contents. On a hit it deletes the staging directory and fails the step, so nothing is uploaded; it prints only the file name, never the match. |
 | Artifact retention | `retention-days: 7`. |
 | Fork PRs | Approval required for all outside contributors (set). Workflows never use `pull_request_target`. PR-triggered e2e jobs run only for same-repo branches (`github.event.pull_request.head.repo.full_name == github.repository`); fork PRs get no secrets. |
-| Package visibility | Verified **Private** after the first push (W8.7). |
+| Package visibility | Verified **Private** after the first push (W8.7). **A package first published by this public repo's `GITHUB_TOKEN` is public** (W4B.7: anonymous pull worked; deleted within 4 min). Before W8: create the package as Private (first push from a personal token, or flip it in the package settings before anything sensitive is pushed), then grant `sls-test` write access under "Manage Actions access". The image contains Windows Server evaluation and NI software and the admin account set from `SLS_ADMIN_PASSWORD`. |
 
 Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, `install/**`, `seal/**`, `agent/**`,
 `context.json`) contain neither password.
@@ -275,35 +275,49 @@ Checklist:
   `build/ image/ testkit/ configs/` into `sls/` (removed files disappear, `out/` is never copied), writes
   `sls/SOURCE.md` (source repo, commit, date). Run it; commit `sls/`. Synced `6ac7034` (30 files, all blobs identical
   to the source). `SOURCE.md` names the source repository but not its internal URL (this repo is public).
-- [ ] W4B.3 `scripts/Invoke-SlsBuild.ps1` (reused by W8.4): runs `Build-SlsImage.ps1`; on a failure reads the failed
+- [x] W4B.3 `scripts/Invoke-SlsBuild.ps1` (reused by W8.4): runs `Build-SlsImage.ps1`; on a failure reads the failed
   stage and message from `build.log`, then retries up to `-MaxAttempts` (3): Install → clean up and start over with a
   new build id (`<id>-a<n>`), later stages → stop the build container and resume `-From <stage>`. Writes
-  `attempts.json` (stage, message, bugcheck yes/no per failure) and step outputs `image`, `build_id`, `out_dir`,
-  `attempts`, `bugchecks`.
-- [ ] W4B.4 `scripts/Get-SoakSummary.ps1 -Path <dir>`: reads every `jobs.jsonl` + `host.json` below `<dir>` and prints
-  a Markdown summary (totals by outcome, per runner: CPU, kvm parameters, outcomes, first failure time, stop codes).
-  Also works on local `out/stability` runs.
-- [ ] W4B.5 `.github/workflows/soak-image.yml` (`workflow_dispatch`; `permissions: contents read, packages write`;
+  `sls/out/builds/attempts-<id>.json` (stage, message, bugcheck yes/no per failure) and step outputs `attempts`,
+  `bugchecks`, `final_build_id` (plus `image`, `build_id`, `out_dir`, … from `Build-SlsImage.ps1`).
+- [x] W4B.4 `scripts/Get-SoakSummary.ps1 -Path <dir>`: reads every run directory below `<dir>` (`jobs.jsonl`,
+  `host.json`, `runner.json`, `build-attempts.json`) and prints a Markdown summary: totals (soak outcomes, builds),
+  per CPU, per run (CPU, hypervisor, kvm parameters, build result, outcomes, median healthy time, failures with time
+  and stop code). Also works on local `out/stability` runs (checked on the 39 WSL jobs). `-JsonOut` writes all job
+  records with the host facts. Plus `scripts/Test-NoSecret.ps1` (W6.2 created early; tested with planted secrets in a
+  plain file, a UTF-16 file and a zip entry): both workflows upload artifacts from this public repo.
+- [x] W4B.5 `.github/workflows/soak-image.yml` (`workflow_dispatch`; `permissions: contents read, packages write`;
   `timeout-minutes: 330`):
   1. checkout; host facts (`lscpu`, `kvm_*` parameters) into the job summary; `sls-host-prep` with `registry-login`
   2. `Invoke-SlsBuild.ps1 -Repository ghcr.io/rajsite/sls-server-soak -BuildId gh-<run_id> -Ram 10G -Cpu 4
      -ExtraTag r<run_number>` with `SLS_BUILD_ADMIN_PASSWORD`
-  3. push the immutable tag and `r<run_number>` (3 tries with backoff); output the digest; job summary (stages,
-     attempts, bugchecks, size, digest)
-  4. `if: always()`: leak check (grep for the secret; fail and delete on a hit), upload `sls/out/builds/<id>` without
-     `credentials.json`, `oem/`, `*.qcow2`, `*.iso`, `*.img` (retention 7 days)
-- [ ] W4B.6 `.github/workflows/soak.yml` (`workflow_dispatch`; `permissions: contents read, packages read`):
-  inputs `image`, `runners` (default 8), `jobs` (3), `minutes` (15), `lanes` (`ci`), `workload` (`api`),
-  `runs-on` (`ubuntu-latest`). Jobs: `matrix` (runner indexes) → `soak` (`fail-fast: false`, `timeout-minutes: 240`:
-  checkout, host prep, `apt-get install tesseract-ocr`, timed `docker pull`, harness with
-  `-OutDir sls/out/stability/r<idx>`, leak check, upload `soak-<idx>`) → `summary` (`if: always()`: download all,
-  `Get-SoakSummary.ps1` into the job summary, upload `soak-all`). The soak job passes even when guests crash (the
-  harness reports, it does not gate); a missing `jobs.jsonl` fails it.
-- [ ] W4B.7 Push; dispatch `soak-image`; monitor with `gh run watch` / `gh run view --log-failed`; fix and iterate
-  until an image is pushed. Record stage times, attempts and bugchecks in §7. Check the package: anonymous manifest
-  request denied (private) and linked to `sls-test`.
+  3. push (input `push`, **default off**, see W4B.7) the immutable tag and `r<run_number>` (3 tries with backoff);
+     job summary (stages, attempts, bugchecks, size, digest)
+  4. `if: always()`: stage `sls/out/builds` without `credentials.json`, `oem/`, `*.qcow2`, `*.iso`, `*.img`, `*.lic`;
+     `Test-NoSecret.ps1`; upload only if it passed (retention 7 days)
+- [x] W4B.6 `.github/workflows/soak.yml` (`workflow_dispatch`; `permissions: contents read, packages read`):
+  inputs `image` (**empty = build on each runner**, see W4B.7), `runners` (default 8), `jobs` (3), `minutes` (15),
+  `lanes` (`ci`), `workload` (`api`), `runs-on` (`ubuntu-latest`). Jobs: `matrix` (runner indexes) → `soak`
+  (`fail-fast: false`, `timeout-minutes: 330`: host facts `runner.json`, host prep, `tesseract-ocr`, build with
+  `Invoke-SlsBuild.ps1` or pull, harness with `-OutDir sls/out/stability/r<idx>`, build logs copied next to it, leak
+  guard, upload `soak-<idx>`) → `summary` (`if: always()`: download all, `Get-SoakSummary.ps1` into the job summary,
+  upload `soak-all`). The soak job passes even when guests crash (the harness reports, it does not gate); a failed
+  build or a missing `jobs.jsonl` fails it. Free-text inputs reach the shell only through `env:`.
+- [x] W4B.7 Push; dispatch `soak-image`; monitor with `gh run watch`; record stage times, attempts and bugchecks in §7;
+  check the package. [Run 1](https://github.com/rajsite/sls-test/actions/runs/44970907519): green on the first
+  attempt, no bugcheck; host **Intel Xeon 6975P-C under KVM** (not Hyper-V; `kvm_intel` with `enable_apicv`, `vnmi`,
+  shadow VMCS). Install 30.1, Seal 10.1, Convert 0.8, Image 2.3, Verify 2.7 min (46 min); disk layer 9.23 GB; image
+  size 9.44 GB per `docker image inspect` (WSL reported 19.40 GB for the same content, probably because the runner's
+  containerd image store reports the compressed size); healthy in Verify after 150 s; push 2.6 min; leak guard passed (35
+  files). **But the package was public**: an anonymous manifest request returned 200. A package created by
+  `GITHUB_TOKEN` in a public repository inherits the repository's visibility. Deleted after about 4 minutes with the
+  new `package-delete.yml` (`GITHUB_TOKEN` has admin rights on packages it created; the local gh token has no package
+  scopes); anonymous requests now get 403. Consequence: `soak-image` push is opt-in, and `soak.yml` builds the image
+  on each soak runner instead of pulling it (no registry; each build is also a 46-min stability sample). W8 needs a
+  private package created first (§10 W4B).
 - [ ] W4B.8 Smoke soak: `runners=1 jobs=1 minutes=5`; fix the workflow until it reports.
-- [ ] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs), twice (different hosts/CPUs). Record per-CPU rates.
+- [ ] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs, 8 builds), twice if the first run is clean (different
+  hosts/CPUs). Record per-CPU rates.
 - [ ] W4B.10 Variant for comparison: `lanes=ci:HV=Y` (WSL: 7/7 failed) on a smaller run, only if W4B.9 is clean
   enough to make the comparison useful.
 - [ ] W4B.11 Results in §7/§8/§10 and the gate for W9 (as W8.7a: 0 failures in 20+ jobs → W9 as planned; a few →
@@ -546,9 +560,13 @@ sls/                                        tooling copy (build/ image/ testkit/
 scripts/Sync-SlsTooling.ps1
 scripts/Test-NoSecret.ps1
 scripts/Push-SlsImage.ps1
+scripts/Invoke-SlsBuild.ps1                 build with retry/resume (W4B, reused by W8)
+scripts/Get-SoakSummary.ps1                 soak results → Markdown (W4B)
 .github/actions/sls-host-prep/action.yml
 .github/actions/sls-upload-logs/action.yml
 .github/workflows/probe.yml
+.github/workflows/soak-image.yml            W4B test image build (package sls-server-soak)
+.github/workflows/soak.yml                  W4B stability soak across runners
 .github/workflows/build-images.yml
 .github/workflows/_sls-e2e.yml
 .github/workflows/e2e-demo.yml

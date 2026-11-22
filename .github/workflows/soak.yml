@@ -1,15 +1,16 @@
 name: soak
 
-# W4B: stability soak of a SystemLink Server image on hosted runners. Each runner starts fresh containers one after
-# the other (like CI jobs) and records how each one ends; the summary job aggregates the failure rate per host CPU.
+# W4B: stability soak of the SystemLink Server image on hosted runners. Each runner builds the image itself (default;
+# no registry, so nothing is published) or pulls -image, then starts fresh containers one after the other (like CI
+# jobs) and records how each one ends. The summary job aggregates builds and jobs per host CPU.
 # Jobs pass even when guests crash: the result is the report, not the job status.
 
 on:
   workflow_dispatch:
     inputs:
       image:
-        description: Image to soak (from soak-image, e.g. ghcr.io/rajsite/sls-server-soak:r1 or a digest)
-        required: true
+        description: Image to pull and soak; empty = build it on each runner (no registry)
+        default: ''
       runners:
         description: Parallel runners
         default: '8'
@@ -47,35 +48,65 @@ jobs:
   soak:
     needs: matrix
     runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: 240
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.matrix.outputs.runners) }}
     env:
-      IMAGE: ${{ inputs.image }}
       OUT: sls/out/stability/r${{ matrix.runner }}
+      BUILD_ID: gh-${{ github.run_id }}-r${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Host facts
+        run: |
+          mkdir -p "$OUT"
+          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
+          hv=$(lscpu | sed -n 's/^Hypervisor vendor:[[:space:]]*//p')
+          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] && for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
+          jq -n --arg cpu "$cpu" --arg hv "$hv" --arg kvm "$kvm" --arg runner "${{ matrix.runner }}" \
+            '{runner: $runner, cpu: $cpu, hypervisor: $hv, kvm: $kvm}' > "$OUT/runner.json"
+          cat "$OUT/runner.json"
 
       - name: Host prep
         uses: ./.github/actions/sls-host-prep
         with:
-          min-free-gb: '40'
-          registry-login: 'true'
+          min-free-gb: ${{ inputs.image == '' && '60' || '40' }}
+          registry-login: ${{ inputs.image != '' }}
 
-      - name: Tools and image
+      - name: Tools
         run: |
           sudo apt-get update -q >/dev/null && sudo apt-get install -y -q tesseract-ocr >/dev/null
           tesseract --version | head -1
+
+      - name: Build image
+        id: build
+        if: inputs.image == ''
+        env:
+          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
+        run: |
+          rc=0
+          pwsh -NoProfile -File scripts/Invoke-SlsBuild.ps1 -BuildId "$BUILD_ID" -MaxAttempts 3 \
+            -Repository sls-server-soak -Ram 10G -Cpu 4 || rc=$?
+          cp "sls/out/builds/attempts-$BUILD_ID.json" "$OUT/build-attempts.json" 2>/dev/null || true
+          exit $rc
+
+      - name: Pull image
+        id: pull
+        if: inputs.image != ''
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
           start=$(date +%s)
           for i in 1 2 3; do docker pull -q "$IMAGE" && break; [ "$i" = 3 ] && exit 1; sleep $((i * 30)); done
           echo "pulled $IMAGE in $(( $(date +%s) - start )) s"
-          echo "Runner ${{ matrix.runner }}: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p'), pull $(( $(date +%s) - start )) s" >> "$GITHUB_STEP_SUMMARY"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Soak
         env:
           SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          IMAGE: ${{ steps.build.outputs.image || steps.pull.outputs.image }}
           LANES: ${{ inputs.lanes }}
           JOBS: ${{ inputs.jobs }}
           MINUTES: ${{ inputs.minutes }}
@@ -87,15 +118,22 @@ jobs:
       - name: Result
         if: always()
         run: |
-          test -s "$OUT/jobs.jsonl" || { echo "::error::no job recorded"; exit 1; }
           pwsh -NoProfile -File scripts/Get-SoakSummary.ps1 -Path "$OUT" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -s "$OUT/jobs.jsonl" || { echo "::error::no soak job recorded"; exit 1; }
 
       - name: Leak guard
         id: guard
         if: always()
         env:
           SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
-        run: pwsh -NoProfile -File scripts/Test-NoSecret.ps1 -Path "$OUT"
+        run: |
+          # Build logs and reports next to the soak results (no credentials, OEM files or disks).
+          if [ -d "sls/out/builds/$BUILD_ID" ]; then
+            rsync -a --exclude credentials.json --exclude 'oem/' --exclude ca-certificates.crt \
+              --exclude '*.qcow2' --exclude '*.img' --exclude '*.iso' --exclude '*.lic' \
+              "sls/out/builds/$BUILD_ID/" "$OUT/build/"
+          fi
+          pwsh -NoProfile -File scripts/Test-NoSecret.ps1 -Path "$OUT"
 
       - name: Upload
         if: always() && steps.guard.outcome == 'success'
@@ -119,8 +157,9 @@ jobs:
       - name: Summary
         env:
           RUN_INFO: >-
-            Image `${{ inputs.image }}`, lanes `${{ inputs.lanes }}`, ${{ inputs.runners }} runner(s) x ${{ inputs.jobs }}
-            job(s) x ${{ inputs.minutes }} min, workload ${{ inputs.workload }}, runs-on ${{ inputs.runs-on }}
+            Image `${{ inputs.image || 'built on each runner' }}`, lanes `${{ inputs.lanes }}`, ${{ inputs.runners }}
+            runner(s) x ${{ inputs.jobs }} job(s) x ${{ inputs.minutes }} min, workload ${{ inputs.workload }},
+            runs-on ${{ inputs.runs-on }}
         run: |
           {
             echo "$RUN_INFO"
@@ -131,4 +170,5 @@ jobs:
         with:
           name: soak-all
           path: soak-all.jsonl
+          if-no-files-found: ignore
           retention-days: 30
