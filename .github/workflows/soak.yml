@@ -1,0 +1,134 @@
+name: soak
+
+# W4B: stability soak of a SystemLink Server image on hosted runners. Each runner starts fresh containers one after
+# the other (like CI jobs) and records how each one ends; the summary job aggregates the failure rate per host CPU.
+# Jobs pass even when guests crash: the result is the report, not the job status.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to soak (from soak-image, e.g. ghcr.io/rajsite/sls-server-soak:r1 or a digest)
+        required: true
+      runners:
+        description: Parallel runners
+        default: '8'
+      jobs:
+        description: Containers per lane, one after the other
+        default: '3'
+      minutes:
+        description: Workload minutes per container (after healthy)
+        default: '15'
+      lanes:
+        description: Lane specs for Test-SlsStability.ps1 -Lane (comma separated, e.g. ci or ci:HV=Y)
+        default: 'ci'
+      workload:
+        description: api or idle
+        default: 'api'
+      runs-on:
+        description: Runner label
+        default: 'ubuntu-latest'
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.m.outputs.runners }}
+    steps:
+      - id: m
+        env:
+          N: ${{ inputs.runners }}
+        run: echo "runners=$(seq 1 "$N" | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  soak:
+    needs: matrix
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.matrix.outputs.runners) }}
+    env:
+      IMAGE: ${{ inputs.image }}
+      OUT: sls/out/stability/r${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host prep
+        uses: ./.github/actions/sls-host-prep
+        with:
+          min-free-gb: '40'
+          registry-login: 'true'
+
+      - name: Tools and image
+        run: |
+          sudo apt-get update -q >/dev/null && sudo apt-get install -y -q tesseract-ocr >/dev/null
+          tesseract --version | head -1
+          start=$(date +%s)
+          for i in 1 2 3; do docker pull -q "$IMAGE" && break; [ "$i" = 3 ] && exit 1; sleep $((i * 30)); done
+          echo "pulled $IMAGE in $(( $(date +%s) - start )) s"
+          echo "Runner ${{ matrix.runner }}: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p'), pull $(( $(date +%s) - start )) s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Soak
+        env:
+          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          LANES: ${{ inputs.lanes }}
+          JOBS: ${{ inputs.jobs }}
+          MINUTES: ${{ inputs.minutes }}
+          WORKLOAD: ${{ inputs.workload }}
+        run: >
+          pwsh -NoProfile -File sls/build/Test-SlsStability.ps1 -Image "$IMAGE" -Lane "$LANES"
+          -Jobs "$JOBS" -JobMinutes "$MINUTES" -Workload "$WORKLOAD" -Tag gh-r${{ matrix.runner }} -OutDir "$OUT"
+
+      - name: Result
+        if: always()
+        run: |
+          test -s "$OUT/jobs.jsonl" || { echo "::error::no job recorded"; exit 1; }
+          pwsh -NoProfile -File scripts/Get-SoakSummary.ps1 -Path "$OUT" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Leak guard
+        id: guard
+        if: always()
+        env:
+          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
+        run: pwsh -NoProfile -File scripts/Test-NoSecret.ps1 -Path "$OUT"
+
+      - name: Upload
+        if: always() && steps.guard.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ matrix.runner }}
+          path: ${{ env.OUT }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  summary:
+    needs: soak
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: soak-*
+          path: soak
+      - name: Summary
+        env:
+          RUN_INFO: >-
+            Image `${{ inputs.image }}`, lanes `${{ inputs.lanes }}`, ${{ inputs.runners }} runner(s) x ${{ inputs.jobs }}
+            job(s) x ${{ inputs.minutes }} min, workload ${{ inputs.workload }}, runs-on ${{ inputs.runs-on }}
+        run: |
+          {
+            echo "$RUN_INFO"
+            echo
+            pwsh -NoProfile -File scripts/Get-SoakSummary.ps1 -Path soak -JsonOut soak-all.jsonl
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soak-all
+          path: soak-all.jsonl
+          retention-days: 30
