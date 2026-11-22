@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Runs a PowerShell script in the Windows guest as SYSTEM through the guest agent's command channel, streams its output
+# and exits with its exit code.
+#   docker exec -i <c> sls-exec [-t seconds] < script.ps1
+#   docker exec <c> sls-exec [-t seconds] -c 'Get-Service NI*'
+#   docker exec <c> sls-exec [-t seconds] /path/in/container/script.ps1
+# The script runs with Windows PowerShell 5.1 (powershell.exe -File): end it with "exit <n>" to return a code; an
+# uncaught error returns 1. -t cancels it (kills the process tree) after <seconds> and returns 124; 0 = no limit.
+# Commands queued before the guest agent runs start once it does.
+set -u
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+timeout=0
+cmd=
+while getopts t:c:h o; do
+  case $o in
+    t) timeout=$OPTARG ;;
+    c) cmd=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+if [ -z "$cmd" ] && [ $# -eq 0 ] && [ -t 0 ]; then
+  echo "sls-exec: no script (use -c, a file, or stdin with docker exec -i)" >&2
+  exit 2
+fi
+
+id="x$(date -u +%Y%m%d%H%M%S)-$$-$RANDOM"
+dir=/shared/cmd
+outdir=/shared/cmd-out
+mkdir -p "$dir" "$outdir"
+tmp="$dir/.$id.tmp"
+{
+  printf '\xef\xbb\xbf' # UTF-8 BOM: Windows PowerShell 5.1 would read the script as ANSI otherwise
+  if [ -n "$cmd" ]; then printf '%s\r\n' "$cmd"
+  elif [ $# -gt 0 ]; then cat -- "$1"
+  else cat
+  fi
+} >"$tmp" || { rm -f "$tmp"; exit 2; }
+mv -f "$tmp" "$dir/$id.ps1"
+
+out="$outdir/$id.out"
+exitf="$outdir/$id.exit"
+offset=0
+flush() {
+  [ -f "$out" ] || return 0
+  local size
+  size=$(stat -c %s "$out" 2>/dev/null) || return 0
+  if [ "$size" -gt "$offset" ]; then
+    tail -c +"$((offset + 1))" "$out" | head -c "$((size - offset))"
+    offset=$size
+  fi
+}
+start=$SECONDS
+cancelAt=0
+while :; do
+  flush
+  if [ -s "$exitf" ]; then
+    flush
+    code=$(tr -dc '0-9-' <"$exitf")
+    rm -f "$out" "$exitf"
+    exit "${code:-1}"
+  fi
+  if [ "$timeout" -gt 0 ] && [ $((SECONDS - start)) -ge "$timeout" ]; then
+    if [ -f "$dir/$id.ps1" ] && rm -f "$dir/$id.ps1" 2>/dev/null && [ ! -f "$out" ]; then
+      echo "sls-exec: not picked up within ${timeout}s (guest agent not running?)" >&2
+      exit 124
+    fi
+    if [ "$cancelAt" -eq 0 ]; then
+      echo "sls-exec: timeout after ${timeout}s, cancelling" >&2
+      : >"$dir/$id.cancel"
+      cancelAt=$SECONDS
+    elif [ $((SECONDS - cancelAt)) -ge 60 ]; then
+      echo "sls-exec: no exit code 60s after cancelling" >&2
+      exit 124
+    fi
+  fi
+  sleep 0.5
+done

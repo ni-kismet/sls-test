@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Disables SMB leases/oplocks in dockur's Samba so files written into the shared folder from the container side (the
+# guest agent's command channel, runtime settings) become visible to the Windows guest. dockur rewrites smb.conf on
+# every container start, so this runs from start.sh (and from the image build on the plain dockur image). Idempotent.
+#   sls-smb-nolease [-w seconds]   wait up to <seconds> for smbd and the [Data] share (default 0)
+set -u
+wait=0
+while getopts w: o; do
+  case $o in
+    w) wait=$OPTARG ;;
+    *) echo "usage: sls-smb-nolease [-w seconds]" >&2; exit 2 ;;
+  esac
+done
+c=/etc/samba/smb.conf
+i=0
+while ! { [ -s /var/run/samba/smbd.pid ] && grep -q '^\[Data\]' "$c" 2>/dev/null; }; do
+  if [ "$i" -ge "$wait" ]; then echo "sls-smb-nolease: smbd or the [Data] share is not ready" >&2; exit 3; fi
+  i=$((i + 1))
+  sleep 1
+done
+grep -q 'smb3 directory leases = no' "$c" && exit 0
+sed -i '/^\[global\]/a\    oplocks = no\n    level2 oplocks = no\n    smb2 leases = no\n    smb3 directory leases = no' "$c"
+smbcontrol smbd reload-config >/dev/null 2>&1
+# A guest that is already connected keeps its leases until it reconnects.
+smbcontrol smbd close-share Data >/dev/null 2>&1
+echo "[sls] $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) samba leases disabled"

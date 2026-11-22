@@ -238,7 +238,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 
 > **Done (local commits, nothing pushed).** The image builds and passes Verify and the runtime tests on WSL and Windows.
 > Open platform risk: on this nested-KVM host (AMD, WSL2) the Windows guest bugchecks or hangs in about 2 of 5 fresh
-> containers, within the first 11 minutes (soak, §10 W4); W8.7a measures it on GitHub runners.
+> containers, within the first 11 minutes (soak, §10 W4); W4B measures it on GitHub runners.
 
 - [x] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
   - Install 26.4 min, Seal 11.8 min (after fixes), Convert 0.5 min, Image 2.4 min, Verify 3.9 min (sum of stage times 45 min). Fixes in `mraj-sls-container` `218b025` (build VM `HV=N`, panic detection, `/oem` via `docker cp`) and `6b928cc` (seal `mongod --repair`, crash dump purge).
@@ -251,6 +251,63 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 - [x] W4.5 `Test-SlsRuntime.ps1` and `testkit/examples/Test-SlsServer.ps1` in WSL against the new image: green. 14/14 in 546 s; example 4/4 in 172 s.
 - [x] W4.6 Re-run `Test-SlsRuntime.ps1` once from Windows pwsh against the same image (no regression on Windows). 14/14 in 538 s.
 - [x] W4.7 Commit any fixes (no push). `mraj-sls-container`: `218b025`, `6b928cc`, `5497846`, `72c7581`, `7ecb071`, `958237c`, `4993b68`, `0d5db34`.
+
+### W4B. Nested-KVM reliability on GitHub-hosted runners
+
+Goal: find out whether the guest bugchecks/hangs seen on the WSL2 host (about 40% of fresh containers, §10 soak) also
+happen on GitHub's `ubuntu-latest` runners, before W5–W9 build on them. The work below replaces W8.7a and creates the
+W6.1 sync script early (the workflows need the tooling in `sls/`). It stops at a measured failure rate and a
+recommendation; seeds, Playwright and the real `build-images.yml` stay in W5–W9.
+
+Assumptions (made without user input, see §10 W4B):
+- The image is **built on a runner** and pushed with the workflow's `GITHUB_TOKEN` (`packages: write`). The local gh
+  token has no `write:packages`, and the local image's source label is a WSL path, not this repo. The build also
+  measures install/seal crashes on runners.
+- Test package `ghcr.io/rajsite/sls-server-soak` (separate from `sls-server`, deleted after W4B/W8).
+- The image admin password is the existing `SLS_ADMIN_PASSWORD` secret (D4); no new secret.
+- Build VM `-Ram 10G -Cpu 4`: leaves about 5 GB for the host on a 16 GB runner (W4.3: 8 GB is enough at runtime).
+
+Checklist:
+- [x] W4B.1 Linux stop-code OCR in the soak harness (`mraj-sls-container`, local commit): `Get-StopCode` uses
+  `tesseract` when present (reads the native-size blue screen; checked on three saved WSL bugcheck screenshots).
+  `6ac7034`. End to end on WSL (Linux pwsh, injected NMI): job recorded `stop NMI_HARDWARE_FAILURE`.
+- [x] W4B.2 `scripts/Sync-SlsTooling.ps1` (the W6.1 spec): refuses a dirty source, mirrors the *tracked* files of
+  `build/ image/ testkit/ configs/` into `sls/` (removed files disappear, `out/` is never copied), writes
+  `sls/SOURCE.md` (source repo, commit, date). Run it; commit `sls/`. Synced `6ac7034` (30 files, all blobs identical
+  to the source). `SOURCE.md` names the source repository but not its internal URL (this repo is public).
+- [ ] W4B.3 `scripts/Invoke-SlsBuild.ps1` (reused by W8.4): runs `Build-SlsImage.ps1`; on a failure reads the failed
+  stage and message from `build.log`, then retries up to `-MaxAttempts` (3): Install → clean up and start over with a
+  new build id (`<id>-a<n>`), later stages → stop the build container and resume `-From <stage>`. Writes
+  `attempts.json` (stage, message, bugcheck yes/no per failure) and step outputs `image`, `build_id`, `out_dir`,
+  `attempts`, `bugchecks`.
+- [ ] W4B.4 `scripts/Get-SoakSummary.ps1 -Path <dir>`: reads every `jobs.jsonl` + `host.json` below `<dir>` and prints
+  a Markdown summary (totals by outcome, per runner: CPU, kvm parameters, outcomes, first failure time, stop codes).
+  Also works on local `out/stability` runs.
+- [ ] W4B.5 `.github/workflows/soak-image.yml` (`workflow_dispatch`; `permissions: contents read, packages write`;
+  `timeout-minutes: 330`):
+  1. checkout; host facts (`lscpu`, `kvm_*` parameters) into the job summary; `sls-host-prep` with `registry-login`
+  2. `Invoke-SlsBuild.ps1 -Repository ghcr.io/rajsite/sls-server-soak -BuildId gh-<run_id> -Ram 10G -Cpu 4
+     -ExtraTag r<run_number>` with `SLS_BUILD_ADMIN_PASSWORD`
+  3. push the immutable tag and `r<run_number>` (3 tries with backoff); output the digest; job summary (stages,
+     attempts, bugchecks, size, digest)
+  4. `if: always()`: leak check (grep for the secret; fail and delete on a hit), upload `sls/out/builds/<id>` without
+     `credentials.json`, `oem/`, `*.qcow2`, `*.iso`, `*.img` (retention 7 days)
+- [ ] W4B.6 `.github/workflows/soak.yml` (`workflow_dispatch`; `permissions: contents read, packages read`):
+  inputs `image`, `runners` (default 8), `jobs` (3), `minutes` (15), `lanes` (`ci`), `workload` (`api`),
+  `runs-on` (`ubuntu-latest`). Jobs: `matrix` (runner indexes) → `soak` (`fail-fast: false`, `timeout-minutes: 240`:
+  checkout, host prep, `apt-get install tesseract-ocr`, timed `docker pull`, harness with
+  `-OutDir sls/out/stability/r<idx>`, leak check, upload `soak-<idx>`) → `summary` (`if: always()`: download all,
+  `Get-SoakSummary.ps1` into the job summary, upload `soak-all`). The soak job passes even when guests crash (the
+  harness reports, it does not gate); a missing `jobs.jsonl` fails it.
+- [ ] W4B.7 Push; dispatch `soak-image`; monitor with `gh run watch` / `gh run view --log-failed`; fix and iterate
+  until an image is pushed. Record stage times, attempts and bugchecks in §7. Check the package: anonymous manifest
+  request denied (private) and linked to `sls-test`.
+- [ ] W4B.8 Smoke soak: `runners=1 jobs=1 minutes=5`; fix the workflow until it reports.
+- [ ] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs), twice (different hosts/CPUs). Record per-CPU rates.
+- [ ] W4B.10 Variant for comparison: `lanes=ci:HV=Y` (WSL: 7/7 failed) on a smaller run, only if W4B.9 is clean
+  enough to make the comparison useful.
+- [ ] W4B.11 Results in §7/§8/§10 and the gate for W9 (as W8.7a: 0 failures in 20+ jobs → W9 as planned; a few →
+  W9.1 retry; more than about 1 in 10 → larger runners / other CPU vendor / self-hosted bare-metal KVM).
 
 ### W5. Seed configurations (in `mraj-sls-container`, local commits)
 
@@ -284,7 +341,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 
 ### W6. Tooling sync and leak guard in `sls-test`
 
-- [ ] W6.1 `scripts/Sync-SlsTooling.ps1 -Source C:\dev\azdo\mraj-sls-container`:
+- [ ] W6.1 `scripts/Sync-SlsTooling.ps1 -Source C:\dev\azdo\mraj-sls-container` (created early in W4B.2; W6.1 re-syncs after W5):
   - refuses a dirty source tree
   - mirrors `build/`, `image/`, `testkit/`, `configs/` into `sls/` and deletes removed files; never copies `out/`
   - writes `sls/SOURCE.md` (source repo, commit, date)
@@ -349,7 +406,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
   3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
   4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry, SystemLink module evaluation end (build date + 45 days, W4.4)
 - [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
-- [ ] W8.7a Stability soak on the GitHub runner, before W9 relies on it: a `workflow_dispatch` workflow `soak.yml` (inputs `image`, `jobs` default 5, `minutes` default 15, `runs-on` default `ubuntu-latest`; `timeout-minutes: 180`): checkout both repos, `sls-host-prep`, `docker pull <image>`, `pwsh sls/build/Test-SlsStability.ps1 -Image <image> -Lane ci -Jobs <jobs> -JobMinutes <minutes>` with `SLS_BUILD_ADMIN_PASSWORD`; upload `sls/out/stability` (`jobs.jsonl`, `host.json`, lane logs, screenshots; no Windows OCR on Linux, so read the stop code from `*-bsod.ppm`). Run it 2–3 times (different runner hosts). Gate: 0 failures in 10+ jobs → W9 as planned; any bugcheck/hang → apply the W9.1 retry and record the rate in §8; more than about 1 in 10 → try a larger runner / other CPU vendor or plan self-hosted bare-metal KVM runners (§8).
+- [ ] W8.7a *Superseded by W4B* (the soak workflows and the gate live there). Stability soak on the GitHub runner, before W9 relies on it: a `workflow_dispatch` workflow `soak.yml` (inputs `image`, `jobs` default 5, `minutes` default 15, `runs-on` default `ubuntu-latest`; `timeout-minutes: 180`): checkout both repos, `sls-host-prep`, `docker pull <image>`, `pwsh sls/build/Test-SlsStability.ps1 -Image <image> -Lane ci -Jobs <jobs> -JobMinutes <minutes>` with `SLS_BUILD_ADMIN_PASSWORD`; upload `sls/out/stability` (`jobs.jsonl`, `host.json`, lane logs, screenshots; no Windows OCR on Linux, so read the stop code from `*-bsod.ppm`). Run it 2–3 times (different runner hosts). Gate: 0 failures in 10+ jobs → W9 as planned; any bugcheck/hang → apply the W9.1 retry and record the rate in §8; more than about 1 in 10 → try a larger runner / other CPU vendor or plan self-hosted bare-metal KVM runners (§8).
 - [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
 
 ### W9. e2e workflows

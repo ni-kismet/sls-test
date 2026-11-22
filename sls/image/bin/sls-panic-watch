@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Guest bugcheck watchdog (build VMs and the runtime image). QEMU runs with '-action panic=pause', so a Windows
+# bugcheck pauses the VM (status guest-panicked) instead of QEMU exiting 0 as if powered off. On a bugcheck this
+# saves the last screen to $SLS_PANIC_DIR/sls-panic.ppm (often the frame before the blue screen), writes
+# $SLS_PANIC_DIR/sls-panic.txt (read by the build scripts, the healthcheck and the test kit) and ends running
+# sls-exec commands so callers fail at once instead of at their timeout.
+#   sls-panic-watch [-i seconds]   poll interval (default 10); SLS_PANIC_DIR defaults to /storage
+set -u
+interval=10
+while getopts i: o; do
+  case $o in
+    i) interval=$OPTARG ;;
+    *) echo "usage: sls-panic-watch [-i seconds]" >&2; exit 2 ;;
+  esac
+done
+sock=${SLS_MONITOR_SOCK:-/run/shm/monitor.sock}
+dir=${SLS_PANIC_DIR:-/storage}
+rm -f "$dir/sls-panic.txt" "$dir/sls-panic.ppm"
+while sleep "$interval"; do
+  [ -S "$sock" ] || continue
+  status=$(echo 'info status' | nc -q 1 -U "$sock" 2>/dev/null | tr -d '\r' | grep -o 'VM status: .*' | head -n 1)
+  case $status in
+    *guest-panicked*)
+      echo "screendump $dir/sls-panic.ppm" | nc -q 1 -U "$sock" >/dev/null 2>&1
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $status" > "$dir/sls-panic.txt"
+      echo "[sls] $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) Windows bugcheck ($status); last screen saved to $dir/sls-panic.ppm"
+      pkill -f '^bash /usr/local/bin/sls-exec( |$)' || true
+      exit 0 ;;
+  esac
+done
