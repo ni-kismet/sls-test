@@ -8,9 +8,11 @@ $cred = New-SlsCredential $creds.adminUser $creds.adminPassword
 
 if (-not (Test-SlsRunning $c)) {
     if (-not (Test-SlsContainer $c)) { throw "build container $c is missing; rerun from Install" }
-    $prev = (Read-SlsSharedJson $c 'agent/ready.json')
     Write-SlsLog "starting the stopped build VM $c"
     Invoke-SlsDocker start $c | Out-Null
+    # /shared is only readable through a running container; the guest needs minutes to boot, so this is still the
+    # previous boot's ready.json (an empty id would accept that stale file at once).
+    $prev = (Read-SlsSharedJson $c 'agent/ready.json')
     Invoke-SlsDocker exec -d $c sls-smb-nolease -w 600 | Out-Null
     & docker exec -d $c sls-panic-watch 2>&1 | Out-Null
     $null = Wait-SlsAgentReady -Container $c -PreviousBootId $(if ($prev) { $prev.bootId } else { '' }) -TimeoutSec 1200
