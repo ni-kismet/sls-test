@@ -237,8 +237,8 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
 ### W4. Full local build on Linux (WSL), modules included
 
 > **Done (local commits, nothing pushed).** The image builds and passes Verify and the runtime tests on WSL and Windows.
-> Open platform risk: on this nested-KVM host (AMD, WSL2) the Windows guest still bugchecks or hangs now and then (§8,
-> §10 W4); W8 measures it on GitHub runners.
+> Open platform risk: on this nested-KVM host (AMD, WSL2) the Windows guest bugchecks or hangs in about 2 of 5 fresh
+> containers, within the first 11 minutes (soak, §10 W4); W8.7a measures it on GitHub runners.
 
 - [x] W4.1 In WSL pwsh: `Build-SlsImage.ps1 -Ram 12G -Cpu 4 -BuildId wsl-mod1` (Linux paths and module install, at CI-like CPU count). Record install time, total time, disk layer and image size in §7.
   - Install 26.4 min, Seal 11.8 min (after fixes), Convert 0.5 min, Image 2.4 min, Verify 3.9 min (sum of stage times 45 min). Fixes in `mraj-sls-container` `218b025` (build VM `HV=N`, panic detection, `/oem` via `docker cp`) and `6b928cc` (seal `mongod --repair`, crash dump purge).
@@ -349,6 +349,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
   3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
   4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry, SystemLink module evaluation end (build date + 45 days, W4.4)
 - [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
+- [ ] W8.7a Stability soak on the GitHub runner, before W9 relies on it: a `workflow_dispatch` workflow `soak.yml` (inputs `image`, `jobs` default 5, `minutes` default 15, `runs-on` default `ubuntu-latest`; `timeout-minutes: 180`): checkout both repos, `sls-host-prep`, `docker pull <image>`, `pwsh sls/build/Test-SlsStability.ps1 -Image <image> -Lane ci -Jobs <jobs> -JobMinutes <minutes>` with `SLS_BUILD_ADMIN_PASSWORD`; upload `sls/out/stability` (`jobs.jsonl`, `host.json`, lane logs, screenshots; no Windows OCR on Linux, so read the stop code from `*-bsod.ppm`). Run it 2–3 times (different runner hosts). Gate: 0 failures in 10+ jobs → W9 as planned; any bugcheck/hang → apply the W9.1 retry and record the rate in §8; more than about 1 in 10 → try a larger runner / other CPU vendor or plan self-hosted bare-metal KVM runners (§8).
 - [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
 
 ### W9. e2e workflows
@@ -365,6 +366,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
     6. `if: always()`: `sls-upload-logs` with `playwright-report/`, `test-results/`, `results.xml` (artifact `e2e-<project>-report`)
     7. `if: failure()`: `Save-SlsLogs` + `docker logs` → `sls-upload-logs` (artifact `e2e-<project>-server-logs`)
     8. `if: always()`: `docker stop sls`
+  - Guest crash retry (nested-KVM risk, §8): if the container records a bugcheck (`/storage/sls-panic.txt`, `[sls] ... Windows bugcheck`) or turns unhealthy, remove it (`docker rm -f -v sls`) and start a fresh one once (steps 2–3, then the tests again); write the outcome (`guest crash: retried`, stop code from the log) to the job summary so the rate stays visible. Never retry plain test failures beyond Playwright's own `retries: 1`. The soak showed every crash within 11 min of the start, so the retry mostly covers start-up and the first tests. Keep it whatever W8.7a shows, since a runner host change can bring the crashes back.
 - [ ] W9.2 `e2e-demo.yml` and `e2e-migration.yml` (thin callers). Triggers:
   - `workflow_run: { workflows: [build-images], types: [completed] }`, job `if: conclusion == 'success'`; the image comes from the triggering run's `images` artifact (`actions/download-artifact` with `run-id` + `github-token`)
   - `workflow_dispatch` with input `image` (default `ghcr.io/rajsite/sls-server:26.5-demo` / `:26.5-migration`)
@@ -527,7 +529,7 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Risk | Mitigation |
 |------|------------|
 | Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it |
-| Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) 3 bugchecks + 1 hang in ~9 runs of 5–30 min. Dumps point at nested-SVM CPU state (CR8/IRQL, trap flag) being lost, not at a guest driver; not fixable in the image. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. GitHub runners are nested on Azure (Hyper-V) too, often AMD EPYC: W8 logs `lscpu` and measures the rate. If affected: retry a job once on a recorded bugcheck/unhealthy container, try another runner size/CPU, or self-hosted bare-metal KVM runners |
+| Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) about 2 in 5 fresh containers failed in a soak of 20 CI-like jobs (8 bugchecks/hangs, all within 11 min of the start, several during boot; idle and single VMs fail as often; `vls=0`, `npt=0`, `nrips=0`, memory locking, 2 vCPUs do not help). Likely Hyper-V's nested SVM emulation losing guest interrupt state (CR8/IRQL, trap flag); not fixable in the image or by `kvm_amd` settings. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. **This host is not usable for CI.** GitHub runners are nested on Azure (Hyper-V) too, often AMD EPYC: W8.7a soaks them (`Test-SlsStability.ps1`). Mitigation: W9.1 retries once on a recorded guest crash (about 1 in 6 jobs would still fail at this host's rate); if the runner rate is high, try another runner size/CPU vendor or self-hosted bare-metal KVM runners (no nesting) |
 | Module services start after "healthy" | Test Monitor answers 503/504 for about 30 s after healthy; coverage checks and e2e tests wait for it (W4.1b; e2e: wait on a module API before the tests) |
 | Module evaluation expires 45 days after the image build | W4.4: module UI pages are disabled after expiry (APIs keep working). Rebuild the image (manual dispatch) at least every ~6 weeks while UI tests run unlicensed, or provide `SLS_LICENSE_FILE_B64` (user-based license via `/licenses`, never baked in, never uploaded). Record the build date in the job summary (W8) |
 | Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
@@ -661,6 +663,24 @@ Findings:
     with interrupts off, single-stepping itself forever in pool memory (`and [rsp+10h],not TF; iretq` /
     `sub [rsp],2; iretq`, PatchGuard-style self-check code). Same class of nested-virtualization fault (trap-flag
     / #DB state). Hangs only show up as unhealthy containers and test timeouts.
+  - **Soak (runtime characterization).** `mraj-sls-container` `build/Test-SlsStability.ps1` (`605ea57`, `ce061c2`,
+    `ba4073c`) runs fresh containers of the prebuilt module image back to back, like CI jobs (wait healthy, then 15 min
+    of API work across the migration resources, or idle), in parallel lanes. It records each outcome (ok, bugcheck
+    with the stop code read from the blue screen, hang with registers and an NMI, boot, degraded) and the host's KVM
+    and memory settings. It runs from Windows and Linux pwsh (smoke run in WSL: 1 job OK, password from the build's
+    `credentials.json`). Rounds, one change at a time (details in the root `implementation-plan.md`):
+    - `HV=N` with the defaults: 8 failures in 20 jobs (R0, R2, R3, R6), at 119–651 s, several during boot;
+      jobs past about 11 min always finished. `HV=Y`: 7 of 7 within 5–7 min.
+    - Single VM (R3) 2 of 4, idle single VM (R6) 2 of 4: neither load nor parallel VMs are needed.
+    - No help from `vls=0` (R1), memory locking (R2: no swap, migration or compaction recorded, still a hang),
+      `npt=0` (R4: boot > 8 min, then 0xD1), 2 vCPUs (R5: 2 of 2, later at 13 and 15 min), `nrips=0` (R7: 4 of 5, worse).
+      Hyper-V doesn't offer AVIC, vGIF or vNMI to the WSL2 kernel.
+    - Stop codes: 0x4A mostly, 0xD1 (twice, boot), 0x101 CLOCK_WATCHDOG_TIMEOUT (once, boot), plus hangs (RFLAGS.TF
+      loop with interrupts off). KVM syncs V_TPR in and out of the VMCB on every exit and always marks `int_ctl`
+      dirty, so the likely culprit is Hyper-V's nested SVM emulation (L0), outside our control.
+    - One job under contention (3 VMs) took 355 s to healthy and Test Monitor then answered 503 for the whole job:
+      a readiness gap separate from the crashes (W9 waits on Test Monitor before the tests).
+    - Consequence: retry once on a recorded guest crash in W9.1, soak the GitHub runners in W8.7a before trusting them.
   - Useful monitor commands for diagnosis: `info status`, `screendump /tmp/s.ppm`, `info registers -a`, `nmi`,
     `cont`, `system_reset`; dumps come out through `\\host.lan\Data` (`/shared`).
 - **Unclean MongoDB stop with modules (reproduced twice).** Stopping the Service Manager closes about 270 mongod
