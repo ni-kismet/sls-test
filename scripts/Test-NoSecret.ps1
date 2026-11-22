@@ -4,7 +4,8 @@
 Leak guard for artifacts of this public repository: fails when a secret appears in any file below -Path.
 
 .DESCRIPTION
-Searches every file below -Path, including the entries of .zip files (Playwright traces), for each secret as plain
+Searches every file below -Path, including the entries of .zip files (Playwright traces) and .tgz/.tar.gz files (guest
+log bundles), for each secret as plain
 text. Default secrets: $env:SLS_ADMIN_PASSWORD, $env:SLS_BUILD_ADMIN_PASSWORD, the passwords in
 sls/out/builds/*/credentials.json and the decoded $env:SLS_LICENSE_FILE_B64. On a hit it prints only the file name
 (never the match), deletes -Path and exits 1, so nothing gets uploaded.
@@ -55,6 +56,19 @@ foreach ($f in $files) {
                 if (Test-Text (Read-Bytes $ms.ToArray())) { $hits.Add("$($f.FullName)!$($e.FullName)") }
             }
         } finally { $zip.Dispose() }
+    } elseif ($f.Name -match '\.(tgz|tar\.gz)$') {
+        # Guest log bundles (sls-logs). A bundle that can't be read counts as a hit: it can't be checked.
+        try {
+            $fs = [IO.File]::OpenRead($f.FullName)
+            try {
+                $tar = [Formats.Tar.TarReader]::new([IO.Compression.GZipStream]::new($fs, [IO.Compression.CompressionMode]::Decompress))
+                while ($null -ne ($e = $tar.GetNextEntry())) {
+                    if (-not $e.DataStream) { continue }
+                    $ms = [IO.MemoryStream]::new(); $e.DataStream.CopyTo($ms)
+                    if (Test-Text (Read-Bytes $ms.ToArray())) { $hits.Add("$($f.FullName)!$($e.Name)") }
+                }
+            } finally { $fs.Dispose() }
+        } catch { $hits.Add("$($f.FullName) (unreadable: $($_.Exception.Message))") }
     }
 }
 

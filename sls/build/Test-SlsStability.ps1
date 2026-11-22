@@ -124,10 +124,15 @@ $laneCode = {
         if ($text -notmatch 'ran into a problem') { return "no blue screen drawn, see $shot" }
         return "unreadable, see $shot"
     }
-    function Save-Failure([string]$Name, [string]$Prefix) {
+    function Save-Failure([string]$Name, [string]$Prefix, [string]$Outcome) {
         $f = Join-Path $out $Prefix
         & docker logs -t $Name *> "$f-docker.log"
         & docker cp "${Name}:/storage/sls-panic.ppm" "$f-panic.ppm" 2>&1 | Out-Null
+        & docker inspect -f '{{json .State.Health}}' $Name *> "$f-health.json"
+        # VM alive but SystemLink not (fully) usable: the guest's service logs show why.
+        if ($Outcome -in 'boot', 'degraded', 'error' -and -not (Get-Panic $Name) -and (Get-VmStatus $Name) -like 'running*') {
+            try { Save-SlsLogs $Name -Path $out -TimeoutSec 300 | Out-Null } catch { Log "guest logs of ${Name}: $($_.Exception.Message)" }
+        }
     }
     # Waits for a dead endpoint: returns 'alive' (recovered), 'bugcheck' or 'hang' (NMI injected).
     function Resolve-Dead([string]$Name, [string]$Prefix, [ref]$Detail) {
@@ -262,7 +267,7 @@ $laneCode = {
                     $rec.outcome = 'degraded'; $rec.detail = "$([int](100 * $rec.opsFailed / ($rec.opsOk + $rec.opsFailed)))% of ops failed"
                 }
             }
-            if ($rec.outcome -ne 'ok') { Save-Failure $name $prefix }
+            if ($rec.outcome -ne 'ok') { Save-Failure $name $prefix $rec.outcome }
             if ($rec.outcome -eq 'bugcheck') {
                 # sls-panic.txt starts with the UTC time the watcher saw the panic (10 s polling).
                 if ((Get-Panic $name) -match '^(\S+Z)') { $rec.failSec = [int]([DateTimeOffset]::Parse($Matches[1]) - [DateTimeOffset]::Parse($rec.start)).TotalSeconds }
@@ -270,7 +275,7 @@ $laneCode = {
             }
         } catch {
             $rec.outcome = 'error'; $rec.detail = $_.Exception.Message
-            Save-Failure $name $prefix
+            Save-Failure $name $prefix 'error'
         } finally {
             $rec.runSec = [int]$sw.Elapsed.TotalSeconds
             & docker rm -f -v $name 2>&1 | Out-Null
