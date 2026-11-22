@@ -116,7 +116,7 @@ Everything printed to workflow logs and every uploaded artifact is world-readabl
 | Playwright login (`auth.setup.ts`) | Trace/video **off** for the setup project (a trace records the login POST body). `.auth/` storage state is never uploaded. |
 | Playwright tests | `trace: retain-on-failure`, `screenshot: only-on-failure`, `video: off`. Tests use the stored session, so traces don't contain the password. |
 | Guest logs (`Save-SlsLogs`), `docker logs` | Uploaded only on failure, after the leak guard. |
-| **Leak guard** | `scripts/Test-NoSecret.ps1` scans every staged directory before upload (plain files **and** the contents of `.zip` traces) for the admin password, the VM password and the license file contents. On a hit it deletes the staging directory and fails the step, so nothing is uploaded; it prints only the file name, never the match. |
+| **Leak guard** | `scripts/Test-NoSecret.ps1` scans every staged directory before upload (plain files **and** the contents of `.zip` traces and `.tgz`/`.tar.gz` log archives; an unreadable archive counts as a hit) for the admin password, the VM password and the license file contents. On a hit it deletes the staging directory and fails the step, so nothing is uploaded; it prints only the file name, never the match. |
 | Artifact retention | `retention-days: 7`. |
 | Fork PRs | Approval required for all outside contributors (set). Workflows never use `pull_request_target`. PR-triggered e2e jobs run only for same-repo branches (`github.event.pull_request.head.repo.full_name == github.repository`); fork PRs get no secrets. |
 | Package visibility | Verified **Private** after the first push (W8.7). **A package first published by this public repo's `GITHUB_TOKEN` is public** (W4B.7: anonymous pull worked; deleted within 4 min). Before W8: create the package as Private (first push from a personal token, or flip it in the package settings before anything sensitive is pushed), then grant `sls-test` write access under "Manage Actions access". The image contains Windows Server evaluation and NI software and the admin account set from `SLS_ADMIN_PASSWORD`. |
@@ -315,13 +315,46 @@ Checklist:
   scopes); anonymous requests now get 403. Consequence: `soak-image` push is opt-in, and `soak.yml` builds the image
   on each soak runner instead of pulling it (no registry; each build is also a 46-min stability sample). W8 needs a
   private package created first (§10 W4B).
-- [ ] W4B.8 Smoke soak: `runners=1 jobs=1 minutes=5`; fix the workflow until it reports.
-- [ ] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs, 8 builds), twice if the first run is clean (different
-  hosts/CPUs). Record per-CPU rates.
-- [ ] W4B.10 Variant for comparison: `lanes=ci:HV=Y` (WSL: 7/7 failed) on a smaller run, only if W4B.9 is clean
-  enough to make the comparison useful.
-- [ ] W4B.11 Results in §7/§8/§10 and the gate for W9 (as W8.7a: 0 failures in 20+ jobs → W9 as planned; a few →
+- [x] W4B.8 Smoke soak: `runners=1 jobs=1 minutes=5`; fix the workflow until it reports.
+  [Run 44975229679](https://github.com/rajsite/sls-test/actions/runs/44975229679): Intel 6975P-C/KVM, build 47 min,
+  1 job OK (healthy in 170 s, 43 workload iterations, 0 failed operations), summary and leak guard worked (55 min).
+- [x] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs, 8 builds), twice if the first run is clean (different
+  hosts/CPUs). Record per-CPU rates. Runs
+  [44975239854](https://github.com/rajsite/sls-test/actions/runs/44975239854) (only 2 Intel runners counted: 6 AMD
+  runners failed the host facts step, fixed), [44975647189](https://github.com/rajsite/sls-test/actions/runs/44975647189)
+  (841 runner-min, longest job 124 min) and [44983437121](https://github.com/rajsite/sls-test/actions/runs/44983437121)
+  (880 runner-min, longest 155 min), plus the smoke run. **Soak: 46 jobs on 19 runners, 1 failure, no bugcheck**
+  (an EPYC 7763 container not healthy after 900 s, VM running, before the harness collected guest logs). **Builds: 16
+  of 19 succeeded; 3 bugchecks in 26 attempts, all on AMD under Hyper-V.** WSL for comparison: 8 of 20 jobs failed.
+
+  | CPU (L0 hypervisor) | runners | soak jobs failed | builds OK / attempts | build min | healthy s (median) |
+  |---------------------|---------|------------------|-----------------------|-----------|--------------------|
+  | Intel Xeon 6975P-C (KVM) | 4 | 0 / 10 | 4 / 4 | 45–47 | 169–226 |
+  | Intel Xeon Platinum 8573C (Hyper-V) | 6 | 0 / 18 | 6 / 6 | 58–64 | 170–196 |
+  | Intel Xeon Platinum 8370C (Hyper-V) | 2 | 0 / 6 | 2 / 2 | 57–59 | 191–253 |
+  | AMD EPYC 9V74 (Hyper-V) | 2 | 0 / 6 | 2 / 2 | 51–58 | 150–187 |
+  | AMD EPYC 7763 (Hyper-V) | 3 | 1 / 6 (boot) | 2 / 6: one Install bugcheck recovered by a fresh install; one host too slow for Verify (Test Monitor 503 after 300 s, 3 times) | 64–99 | 198–281 |
+  | AMD EPYC 9V45 (Hyper-V) | 2 | no image | 0 / 6: Seal bugcheck on both (run 2: during `dism-component-cleanup`). Run 2's resumes hit the stale `ready.json` bug; run 3's (fixed) still failed: agent not ready in 1200 s, then API timeouts | – | – |
+
+  Tooling bugs found and fixed on the way (all synced into `sls/`): host facts step failing on AMD (`bash -e` with a
+  trailing `[ -d kvm_intel ] &&`); Seal resume accepted the stale `ready.json` (boot id read with `docker exec` on a
+  stopped container; `320e6d4`); resume preflight demanded 60 GB in every stage (now by stage: Install/Seal 60,
+  Convert 35, Image 25, Verify 10 GB; `3730dcb`); Verify coverage wait 300 → 600 s (`3730dcb`); `Invoke-SlsBuild`
+  blamed an old `build.log` line for a preflight failure (now reads only lines of the current attempt); harness saves
+  `<prefix>-health.json` and the guest logs for boot/degraded/error outcomes (`5105a73`, `50083b8`); leak guard now
+  reads `.tgz` (a Verify log archive went unscanned; checked, it held no secret); stop code OCR missed tesseract's
+  `‘Stop code: …` (`c216896`).
+- [x] W4B.10 Variant for comparison: `lanes=ci:HV=Y` (WSL: 7/7 failed) on a smaller run, only if W4B.9 is clean
+  enough to make the comparison useful. [Run 44986128105](https://github.com/rajsite/sls-test/actions/runs/44986128105)
+  (`runners=4 jobs=2 minutes=10`, 330 runner-min): builds 4 of 4 OK (with `HV=N`); **2 of 8 jobs bugchecked**, EPYC
+  9V74 at 11.2 min and EPYC 7763 at 10.6 min, both `IRQL_GT_ZERO_AT_SYSTEM_SERVICE` (0x4A, read from the screenshots;
+  the OCR fix above came from this run), the WSL failure. The same CPUs with `HV=N`: 0 bugchecks in 12 jobs. Keep
+  `HV=N`.
+- [x] W4B.11 Results in §7/§8/§10 and the gate for W9 (as W8.7a: 0 failures in 20+ jobs → W9 as planned; a few →
   W9.1 retry; more than about 1 in 10 → larger runners / other CPU vendor / self-hosted bare-metal KVM).
+  **Gate: "a few" → W9 as planned with the W9.1 retry** (runtime: 1 failure in 46 jobs, no bugcheck, about 2%). Builds
+  (W8) need the retry wrapper and an answer for EPYC 9V45 hosts (§8, §10 W4B). GitHub runners are usable for CI; the
+  WSL2 host is not.
 
 ### W5. Seed configurations (in `mraj-sls-container`, local commits)
 
@@ -406,7 +439,7 @@ Checklist:
 - [ ] W8.3 Job `matrix`: turns the `configs` CSV into a JSON matrix output.
 - [ ] W8.4 Job `base` (`timeout-minutes: 300`):
   1. checkout; `sls-host-prep`
-  2. `Build-SlsImage.ps1 -SlsVersion … -Packages … -Repository $REPO -BuildId gh-${{ github.run_id }} -Ram … -Cpu … -ExtraTag <full>-<date>-r${{ github.run_number }}` with `SLS_BUILD_ADMIN_PASSWORD` from the secret
+  2. `scripts/Invoke-SlsBuild.ps1` (W4B.3: retries, attempts/bugcheck outputs) running `Build-SlsImage.ps1 -SlsVersion … -Packages … -Repository $REPO -BuildId gh-${{ github.run_id }} -Ram … -Cpu … -ExtraTag <full>-<date>-r${{ github.run_number }}` with `SLS_BUILD_ADMIN_PASSWORD` from the secret; host facts (CPU, `kvm_*`) in the summary as in `soak.yml`; EPYC 9V45 handling per §8
   3. `Push-SlsImage.ps1` with only the immutable tag; outputs `image` (`$REPO@sha256:…`) and `full_version`
   4. `if: always()`: `sls-upload-logs` for `sls/out/builds/gh-<run_id>` (artifact `base-logs`)
 - [ ] W8.5 Job `seed` (`needs: [matrix, base]`, `fail-fast: false`, `timeout-minutes: 75`):
@@ -419,7 +452,7 @@ Checklist:
   2. `docker buildx imagetools create -t $REPO:26.5 -t $REPO:<x.y.z> <base digest>`; same for `26.5-<cfg>`
   3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
   4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry, SystemLink module evaluation end (build date + 45 days, W4.4)
-- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
+- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. **Before it pushes**, the `sls-server` package must already exist as Private (§3, W4B.7: a first push by `GITHUB_TOKEN` creates a public package). Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
 - [ ] W8.7a *Superseded by W4B* (the soak workflows and the gate live there). Stability soak on the GitHub runner, before W9 relies on it: a `workflow_dispatch` workflow `soak.yml` (inputs `image`, `jobs` default 5, `minutes` default 15, `runs-on` default `ubuntu-latest`; `timeout-minutes: 180`): checkout both repos, `sls-host-prep`, `docker pull <image>`, `pwsh sls/build/Test-SlsStability.ps1 -Image <image> -Lane ci -Jobs <jobs> -JobMinutes <minutes>` with `SLS_BUILD_ADMIN_PASSWORD`; upload `sls/out/stability` (`jobs.jsonl`, `host.json`, lane logs, screenshots; no Windows OCR on Linux, so read the stop code from `*-bsod.ppm`). Run it 2–3 times (different runner hosts). Gate: 0 failures in 10+ jobs → W9 as planned; any bugcheck/hang → apply the W9.1 retry and record the rate in §8; more than about 1 in 10 → try a larger runner / other CPU vendor or plan self-hosted bare-metal KVM runners (§8).
 - [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
 
@@ -586,16 +619,17 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Probe: CPU / RAM / `/` free / `/mnt` free / KVM | 4 vCPU / 15 GiB (+3 GB swap file) / 88 GB of 145 GB / no separate `/mnt` / KVM + TUN usable in containers. Ubuntu 26.04.1, kernel 7.0 azure, Docker 29.4.2 (overlayfs, cgroup v2), pwsh 7.6.10 |
 | Docker free after host prep | 87 GB with no reclaim (2 s); 112 GB with reclaim (202 s) |
 | Products and versions installed | ni-systemlink-server, -software-config-module, -test-module, -asset-module 26.5.1.49157-0+f5; NIPM 26.8.0.49285; Windows Server 2022 build 20348.587 (eval expires 2027-05-19) |
-| Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 2.4 min, Verify 3.9 min = 45 min of stage time (`build.json` `stagesSec`; the build was resumed several times, so no single wall-clock run) / GitHub: W8 |
+| Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 2.4 min, Verify 3.9 min = 45 min of stage time (`build.json` `stagesSec`; the build was resumed several times, so no single wall-clock run) / GitHub (`-Ram 10G -Cpu 4`, W4B): 45–47 min on Intel 6975P-C/KVM (Install 30.1, Seal 10.1, Convert 0.8, Image 2.3, Verify 2.7), 57–64 min on Intel Xeon 8370C/8573C, 51–58 min on EPYC 9V74, 64–99 min on EPYC 7763 (Hyper-V L0) |
 | Disk layer (`base.qcow2`) size, with modules | 9.23 GB (gate 9.5 GB); `data.img` allocated 20.35 GB after the seal |
-| Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB) / W5 / W5 |
-| Boot to healthy, guest RAM used | 8 GB guest, 4 cores: healthy 121–150 s alone, 194–219 s with other VMs running; Test Monitor up to ~30 s later (coverage waits). With `SLS_ADMIN_PASSWORD` at start: 176–194 s (password set in ~135 s). RAM 8 min after boot: 4.8 GB used, 3.2 GB free, commit 7.0 of 9.9 GB → e2e default `ram` 8G |
+| Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB); 9.44 GB on the GitHub runner (W4B.7, containerd image store) / W5 / W5 |
+| Boot to healthy, guest RAM used | 8 GB guest, 4 cores: healthy 121–150 s alone, 194–219 s with other VMs running; Test Monitor up to ~30 s later (coverage waits). With `SLS_ADMIN_PASSWORD` at start: 176–194 s (password set in ~135 s). RAM 8 min after boot: 4.8 GB used, 3.2 GB free, commit 7.0 of 9.9 GB → e2e default `ram` 8G. GitHub runners (W4B, 8 GB guest, one VM per runner): median healthy 150–281 s per runner, longest 561 s (Verify on a slow EPYC 7763) |
+| GitHub runner stability (W4B, `HV=N`) | Soak 46 jobs on 19 runners: 1 failure (not healthy, EPYC 7763), 0 bugchecks. Builds: 16 of 19 OK, 3 bugchecks in 26 attempts (EPYC 9V45 Seal ×2, EPYC 7763 Install ×1). `HV=Y`: 2 of 8 bugchecks (0x4A). WSL2 host: 8 of 20 |
 | Module licensing outcome (unlicensed / license file needed) | No license needed now: "Trial" (5 users / 10 systems), Test/Asset/Advanced evaluations run 45 days from the image build. After expiry the module UI pages are disabled ("not licensed"); APIs (queries and creates) keep working |
 | Coverage endpoints (resource → route → status) | workspaces `GET niuser/v1/workspaces` 200; users `POST niuser/v1/users/query` 200; files `GET nifile/v1/service-groups/Default/files` 200; Test Monitor `POST nitestmonitor/v2/query-products` / `query-results` / `query-steps` 503 at 130 s, 200 at 215 s; feeds `GET nirepo/v1/feeds` 200; assets `POST niapm/v1/query-assets` 200; states `GET nisystemsstate/v1/states` 200; systems `POST nisysmgmt/v1/query-systems` 200 |
 | Base push time | |
 | Seed job time (demo / migration) | |
 | e2e job time (pull / healthy / tests) | |
-| Actions minutes per full run | |
+| Actions minutes per full run | W4B soak (8 runners, build + 3×15-min jobs): 841–880 runner-min, wall clock up to 155 min; free for this public repo (standard runners) |
 
 ---
 
@@ -604,7 +638,10 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Risk | Mitigation |
 |------|------------|
 | Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it |
-| Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) about 2 in 5 fresh containers failed in a soak of 20 CI-like jobs (8 bugchecks/hangs, all within 11 min of the start, several during boot; idle and single VMs fail as often; `vls=0`, `npt=0`, `nrips=0`, memory locking, 2 vCPUs do not help). Likely Hyper-V's nested SVM emulation losing guest interrupt state (CR8/IRQL, trap flag); not fixable in the image or by `kvm_amd` settings. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. **This host is not usable for CI.** GitHub runners are nested on Azure (Hyper-V) too, often AMD EPYC: W8.7a soaks them (`Test-SlsStability.ps1`). Mitigation: W9.1 retries once on a recorded guest crash (about 1 in 6 jobs would still fail at this host's rate); if the runner rate is high, try another runner size/CPU vendor or self-hosted bare-metal KVM runners (no nesting) |
+| Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) about 2 in 5 fresh containers failed in a soak of 20 CI-like jobs (8 bugchecks/hangs, all within 11 min of the start, several during boot; idle and single VMs fail as often; `vls=0`, `npt=0`, `nrips=0`, memory locking, 2 vCPUs do not help). Likely Hyper-V's nested SVM emulation losing guest interrupt state (CR8/IRQL, trap flag); not fixable in the image or by `kvm_amd` settings. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. **This host is not usable for CI.** GitHub runners (W4B): at runtime 1 failure in 46 jobs and no bugcheck with `HV=N` (Intel on KVM or Hyper-V L0, AMD EPYC 9V74/7763 on Hyper-V); `HV=Y` brings the 0x4A back (2 of 8 on AMD). Builds are hit harder: 3 bugchecks in 26 attempts, all on AMD under Hyper-V (next row). Mitigation: keep `HV=N`; W9.1 retries once on a recorded guest crash or an unhealthy container; builds go through `Invoke-SlsBuild.ps1` (retries); if the rate rises, larger runners / self-hosted bare-metal KVM runners (no nesting) |
+| EPYC 9V45 (Turin) runners crash the build | 2 of 2 builds on 9V45 hosts bugchecked in Seal and did not recover on a Seal resume (W4B.9); no runtime data on that CPU (soak runners build their own image). GitHub can't pin a CPU model. Options for W8 (decide there): after a bugcheck in a later stage, retry from a fresh Install instead of resuming (worked for an EPYC 7763 Install bugcheck); or check `lscpu` first and fail the job early on 9V45 so a re-run lands elsewhere; record the CPU in the build summary either way. W9 should report the CPU of every crashed e2e job, to catch 9V45 runtime crashes |
+| Slow runner hosts | EPYC 7763 hosts took up to 99 min to build, 561 s to healthy, and one never got Test Monitor past 503 within 300 s (3 Verify attempts; services went live 8 min late, RabbitMQ connect failures, AssetPerformanceManagement restarted 5 times). Verify now waits 600 s; W9 waits on Test Monitor before the tests with a generous timeout (≥ 10 min) |
+| A package published by `GITHUB_TOKEN` in this public repo is public | Happened in W4B.7 (deleted within 4 min). Create the `sls-server` package as Private before W8 pushes anything (§3); the soak workflows don't push by default |
 | Module services start after "healthy" | Test Monitor answers 503/504 for about 30 s after healthy; coverage checks and e2e tests wait for it (W4.1b; e2e: wait on a module API before the tests) |
 | Module evaluation expires 45 days after the image build | W4.4: module UI pages are disabled after expiry (APIs keep working). Rebuild the image (manual dispatch) at least every ~6 weeks while UI tests run unlicensed, or provide `SLS_LICENSE_FILE_B64` (user-based license via `/licenses`, never baked in, never uploaded). Record the build date in the job summary (W8) |
 | Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
@@ -787,3 +824,39 @@ Findings:
 Leftovers kept for W5: image `sls-server-mod:26.5` (= `:26.5.1-20261121`) and `~/sls/out/builds/wsl-mod1`
 (`credentials.json` holds the image admin password; pass it as `SLS_BUILD_ADMIN_PASSWORD`). The build cleaned its
 container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were removed.
+
+**W4B (done), GitHub runner reliability; tooling `6ac7034`, `320e6d4`, `3730dcb`, `5105a73`, `50083b8`, `c216896`**
+
+- **Answer: GitHub's `ubuntu-latest` runners don't show the WSL2 failure rate at runtime.** With `HV=N`, 46 soak
+  jobs (15 min each, API workload, fresh container each) on 19 runners had 1 failure and no bugcheck (WSL2 host:
+  8 of 20). The image *build* still hits guest bugchecks on AMD hosts under Hyper-V: 3 in 26 attempts, and both
+  builds on EPYC 9V45 failed for good. `HV=Y` brings the 0x4A back on AMD (2 of 8), so `HV=N` stays the default.
+- **The fleet is mixed and can't be chosen.** Across 23 counted runners (plus 6 unlogged AMD runners): Intel Xeon
+  6975P-C on a **KVM** L0 (APICv, shadow VMCS, vNMI exposed: fastest, 45–47 min builds), Intel Xeon 8573C/8370C and
+  AMD EPYC 9V74/7763/9V45 on **Hyper-V** L0 (`enable_apicv=N`, `enable_shadow_vmcs=N` on Intel; `avic=N`, `vgif=0`,
+  `vnmi=N` on AMD). All bugchecks were on AMD under Hyper-V, the same pairing as the WSL2 host. Roughly half the
+  runners were AMD.
+- **Assumptions made without user input:**
+  - The image is built on each soak runner (no registry) after the `soak-image` push turned out public. This costs
+    about 1 h per runner but measures the build too. A soak against a private registry image remains possible with
+    the `image` input once W8's package exists.
+  - `jobs=3 minutes=15` per runner, one VM at a time (runner has 16 GB). Parallel lanes, as on WSL, weren't tried.
+  - Run 1's 6 AMD runners (host facts bug) and run 2's runners before the fixes count only where their data is valid.
+- **Build retries.** `Invoke-SlsBuild.ps1` recovered an EPYC 7763 Install bugcheck by starting over (new build id,
+  99 min total). On EPYC 9V45 a Seal bugcheck was followed by failed Seal resumes (agent not ready in 1200 s, API
+  timeouts): the VM after a bugcheck mid-Seal (during `dism-component-cleanup`) seems damaged or the host keeps
+  crashing it. For W8, decide between a fresh-Install retry after any bugcheck and a fail-fast check on 9V45 (§8).
+- **Diagnostics now in place on runners:** host facts (`lscpu`, `kvm_*` parameters, L0 hypervisor) per runner; stop
+  code by tesseract OCR (tolerates OCR noise like a leading `‘`, spaces for underscores); screenshots (`*-bsod.ppm`);
+  `<prefix>-health.json` and guest logs for boot/degraded/error outcomes; per-attempt build failures with bugcheck
+  flag; `Get-SoakSummary.ps1` per CPU and per runner in the run summary; leak guard on everything uploaded, including
+  zip and tgz contents.
+- **Open data gaps:** no runtime soak on EPYC 9V45 (no image built there); the one boot failure (EPYC 7763) happened
+  before guest logs were collected, so its cause is unknown (it could be the slow-host service start seen in Verify).
+- **Cost and time.** Standard runners are free for this public repo; an 8-runner soak used 841–880 runner-minutes
+  and took up to 2.6 h wall clock. Each build is 45–99 min depending on the host, so W8 (base + 2 seeds) will take
+  about 1.5–2.5 h and W9 jobs will pull an ~8–10 GB image.
+- **Housekeeping before W8 (user):** create the `ghcr.io/rajsite/sls-server` package as Private (§3) and grant
+  `sls-test` access. Optionally rotate `SLS_ADMIN_PASSWORD`, which was in the public `sls-server-soak` image for about
+  4 minutes. `soak.yml`, `soak-image.yml` and `package-delete.yml` stay for later re-checks (e.g. after a runner
+  image or SystemLink change).
