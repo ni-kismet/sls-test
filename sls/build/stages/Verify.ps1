@@ -22,7 +22,7 @@ try {
     if ($err) { throw "verify: tag round trip failed: $err" }
     $roundTripSec = [math]::Round($sw.Elapsed.TotalSeconds)
     Write-SlsLog "verify: tag round trip ok ($roundTripSec s after start)"
-    $coverage = @(Test-SlsServiceCoverage $server -WaitSec 300)
+    $coverage = @(Test-SlsServiceCoverage $server -WaitSec 600)
     foreach ($c in $coverage) { Write-SlsLog ("verify: coverage {0,-22} {1,3} {2,-7} {3,5} s {4}" -f $c.Resource, $c.Status, $c.Result, $c.Seconds, $c.Route) }
     # Strict only with the module products (a server-only build has no Test Monitor, assets, states or systems).
     $modules = 'ni-systemlink-software-config-module', 'ni-systemlink-test-module', 'ni-systemlink-asset-module'

@@ -46,8 +46,9 @@ param(
     # PEM file with extra root certificates for the VM container's downloads (the Windows ISO) behind TLS-inspecting
     # proxies. Default: SLS_BUILD_CA_FILE. Not part of the image.
     [string]$CaCertFile = $env:SLS_BUILD_CA_FILE,
-    # Preflight: free GB required in the Docker data root. Default: SLS_BUILD_MIN_FREE_GB, else 60.
-    [int]$MinFreeGB = $(if ($env:SLS_BUILD_MIN_FREE_GB) { [int]$env:SLS_BUILD_MIN_FREE_GB } else { 60 }),
+    # Preflight: free GB required in the Docker data root. Default: SLS_BUILD_MIN_FREE_GB, else 60 for a whole build
+    # and less when resuming at a later stage (what the remaining stages still write).
+    [int]$MinFreeGB = $(if ($env:SLS_BUILD_MIN_FREE_GB) { [int]$env:SLS_BUILD_MIN_FREE_GB } else { 0 }),
     # More tags for the image: a bare tag goes on -Repository, a full reference (repo:tag) is used as is.
     [string[]]$ExtraTag = @(),
     # User-based license files mounted into the Verify container only (never into the build VM or the image).
@@ -136,7 +137,9 @@ if ($CaCertFile) {
 }
 
 # ---------------------------------------------------------------- preflight
-$freeGB = Test-SlsDockerHost -MinFreeGB $MinFreeGB
+if (-not $MinFreeGB) { $MinFreeGB = @{ Install = 60; Seal = 60; Convert = 35; Image = 25; Verify = 10 }[$From] }
+try { $freeGB = Test-SlsDockerHost -MinFreeGB $MinFreeGB }
+catch { Write-SlsLog "stage $From FAILED: preflight: $($_.Exception.Message)"; throw }
 Write-SlsLog "preflight: docker ok, /dev/kvm ok, $freeGB GB free"
 if ($From -eq 'Install') {
     foreach ($u in @($Ctx.NipmUrl) + @($Ctx.Feeds | ForEach-Object { "$_/Packages" })) {

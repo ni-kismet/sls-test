@@ -33,11 +33,16 @@ function Write-CiOutput([Collections.IDictionary]$Values) {
     foreach ($k in $Values.Keys) { Add-Content -Path $env:GITHUB_OUTPUT -Value "$k=$($Values[$k])" -Encoding utf8 }
 }
 
-function Get-Failure([string]$Id) {
-    # Last "stage <name> FAILED: <message>" line of the build's log.
+function Get-LogLength([string]$Id) {
     $log = Join-Path $builds "$Id/build.log"
-    $line = if (Test-Path $log) { Select-String -Path $log -Pattern '\] stage (\w+) FAILED: (.*)$' | Select-Object -Last 1 }
-    if (-not $line) { return [pscustomobject]@{ stage = 'Install'; message = 'no stage failure in build.log (preflight or setup error)' } }
+    if (Test-Path $log) { return @(Get-Content $log).Count } else { return 0 }
+}
+
+function Get-Failure([string]$Id, [int]$Skip, [string]$From) {
+    # Last "stage <name> FAILED: <message>" line this attempt added to the build's log.
+    $log = Join-Path $builds "$Id/build.log"
+    $line = if (Test-Path $log) { Get-Content $log | Select-Object -Skip $Skip | Select-String -Pattern '\] stage (\w+) FAILED: (.*)$' | Select-Object -Last 1 }
+    if (-not $line) { return [pscustomobject]@{ stage = $From; message = 'no stage failure in build.log (setup error; see the job log)' } }
     return [pscustomobject]@{ stage = $line.Matches[0].Groups[1].Value; message = $line.Matches[0].Groups[2].Value }
 }
 
@@ -45,6 +50,7 @@ $attempts = [Collections.Generic.List[object]]::new()
 $id = $BuildId; $from = 'Install'; $ok = $false
 for ($n = 1; $n -le $MaxAttempts; $n++) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
+    $logStart = Get-LogLength $id
     Write-Host "::group::attempt $n of ${MaxAttempts}: build $id from $from"
     if ($from -eq 'Install') { & pwsh -NoProfile -File $build -BuildId $id @BuildArgs }
     else { & pwsh -NoProfile -File $build -BuildId $id -From $from }
@@ -53,7 +59,7 @@ for ($n = 1; $n -le $MaxAttempts; $n++) {
     $a = [ordered]@{ attempt = $n; buildId = $id; from = $from; minutes = [math]::Round($sw.Elapsed.TotalMinutes, 1); exit = $code }
     if ($code -eq 0) { $a.result = 'ok'; $attempts.Add($a); $ok = $true; break }
 
-    $f = Get-Failure $id
+    $f = Get-Failure $id $logStart $from
     $a.result = 'failed'; $a.stage = $f.stage; $a.message = $f.message; $a.bugcheck = [bool]($f.message -match 'bugcheck')
     $attempts.Add($a)
     Write-Host "::warning::build $id failed in $($f.stage)$(if ($a.bugcheck) { ' (Windows bugcheck)' }): $($f.message)"
