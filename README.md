@@ -158,8 +158,7 @@ The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-se
 
 ## Run a server locally
 
-Needs Docker with `/dev/kvm`: Linux with KVM, or Docker Engine inside a WSL2 distro with nested virtualization (run
-the commands there). The test package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is
+Needs Docker with `/dev/kvm`: Linux with KVM, or Docker on Windows with WSL2 and nested virtualization. The test package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is
 needed. Tags: `26.5` (base), `26.5-demo`, `26.5-migration`.
 
 Pull the image (~20 GB):
@@ -174,16 +173,24 @@ Start it (`SLS_HEALTH_AUTH` makes the healthcheck sign in, so `healthy` means th
 docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 -e SLS_HEALTH_AUTH=admin:test ghcr.io/rajsite/sls-server-actions-test:26.5-demo
 ```
 
-Wait until the status goes from `starting` to `healthy` (~3-4 min), then open http://127.0.0.1:8080 and sign in as
-admin / test:
+The `docker` commands work the same in bash, PowerShell and cmd. Wait until the status goes from `starting` to
+`healthy` (~3-4 min), then open http://127.0.0.1:8080 and sign in as admin / test:
 
 ```bash
-docker inspect -f '{{.State.Health.Status}}' sls
+docker inspect -f "{{.State.Health.Status}}" sls
 ```
 
 `healthy` means every NI service is running, the web server is up, and authenticated calls to the auth and tag
 services succeed. The module services (Test Monitor, assets, systems) can answer up to ~30 s later. If you need one
-of them, poll its API, for example Test Monitor:
+of them, poll its API, for example Test Monitor.
+
+PowerShell (Windows PowerShell 5.1 or 7; `YWRtaW46dGVzdA==` is `admin:test` in base64):
+
+```powershell
+while ($true) { try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/nitestmonitor/v2/query-results -ContentType application/json -Body '{"take":1}' -Headers @{ Authorization = 'Basic YWRtaW46dGVzdA==' } | Out-Null; break } catch { Start-Sleep -Seconds 5 } }
+```
+
+bash:
 
 ```bash
 until curl -sf -u admin:test -H 'Content-Type: application/json' -d '{"take":1}' http://127.0.0.1:8080/nitestmonitor/v2/query-results >/dev/null; do sleep 5; done
@@ -192,7 +199,8 @@ until curl -sf -u admin:test -H 'Content-Type: application/json' -d '{"take":1}'
 Stop and remove it (the grace period lets Windows shut down):
 
 ```bash
-docker stop -t 150 sls && docker rm sls
+docker stop -t 150 sls
+docker rm sls
 ```
 
 - `-e SLS_ADMIN_PASSWORD=<pw>`: another web admin password, set at start (~40 s more).
