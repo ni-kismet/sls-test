@@ -468,10 +468,12 @@ Checklist:
 - [x] W6B.3 `scripts/ci/Build-SlsCi.ps1` + `sls-build-image` (base and seeded; `-OnBugcheck`, `-RejectCpu`; push
   guard; summary).
 - [x] W6B.4 `scripts/ci/Start-SlsCi.ps1` + `sls-start-server`; local check in WSL against `sls-server-mod:26.5`.
-- [ ] W6B.5 `.github/workflows/actions-test.yml` (`workflow_dispatch`): build base with `push: false` → start it with
+- [x] W6B.5 `.github/workflows/actions-test.yml` (`workflow_dispatch`): build base with `push: false` → start it with
   `pull: false` → coverage check; optional seeded build (`config`) on the same runner; optional push to a test
-  package and a second job that starts it from the registry. Monitor with gh until green.
-- [ ] W6B.6 `soak.yml` and `soak-image.yml` use `sls-build-image`; smoke soak green.
+  package and a second job that starts it from the registry. Monitor with gh until green. Run 45099474477
+  (`config=migration`, `push=true`) green: build job 81 min, registry start job 6.6 min (§7, §10).
+- [x] W6B.6 `soak.yml` and `soak-image.yml` use `sls-build-image`; smoke soak green (run 45099504417: build 1
+  attempt, 1 × 5-min job ok, 284 API ops, 0 failed).
 - [x] W6B.7 README: how to use the actions here and from another repository (pin a tag; package access for that
   repository).
 
@@ -706,9 +708,9 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | GitHub runner stability (W4B, `HV=N`) | Soak 46 jobs on 19 runners: 1 failure (not healthy, EPYC 7763), 0 bugchecks. Builds: 16 of 19 OK, 3 bugchecks in 26 attempts (EPYC 9V45 Seal ×2, EPYC 7763 Install ×1). `HV=Y`: 2 of 8 bugchecks (0x4A). WSL2 host: 8 of 20 |
 | Module licensing outcome (unlicensed / license file needed) | No license needed now: "Trial" (5 users / 10 systems), Test/Asset/Advanced evaluations run 45 days from the image build. After expiry the module UI pages are disabled ("not licensed"); APIs (queries and creates) keep working |
 | Coverage endpoints (resource → route → status) | workspaces `GET niuser/v1/workspaces` 200; users `POST niuser/v1/users/query` 200; files `GET nifile/v1/service-groups/Default/files` 200; Test Monitor `POST nitestmonitor/v2/query-products` / `query-results` / `query-steps` 503 at 130 s, 200 at 215 s; feeds `GET nirepo/v1/feeds` 200; assets `POST niapm/v1/query-assets` 200; states `GET nisystemsstate/v1/states` 200; systems `POST nisysmgmt/v1/query-systems` 200 |
-| Base push time | |
-| Seed job time (demo / migration) | Local WSL (8 GB, 4 cores): demo 8.1 min, migration 11.7 min (boot 3–4 min, seed 4 s / 87 s, seal ~2 min, rebase, docker build, verify boot 2–2.5 min) |
-| e2e job time (pull / healthy / tests) | |
+| Base push time | GitHub (W6B.5, new package): 165 s for base + config tags; the 9.88e9-byte layer uploaded in ~90 s, then the first push of the new package got `denied`, the retry 60 s later found every layer present and pushed the manifest (§10). The config layer push took 4 s |
+| Seed job time (demo / migration) | Local WSL (8 GB, 4 cores): demo 8.1 min, migration 11.7 min (boot 3–4 min, seed 4 s / 87 s, seal ~2 min, rebase, docker build, verify boot 2–2.5 min). GitHub (EPYC 7763): migration 11.4 min on top of a 62.5-min base build; whole `sls-build-image` 73.8 min |
+| e2e job time (pull / healthy / tests) | Start only (W6B.5): local image on the build runner (EPYC 7763) healthy 210 s, services ready 230 s; from GHCR on a fresh runner (Xeon 8573C) pull 192 s, healthy 169.5 s, ready 182.5 s, start step 6.3 min, job 6.6 min. Tests: W7/W9 |
 | Actions minutes per full run | W4B soak (8 runners, build + 3×15-min jobs): 841–880 runner-min, wall clock up to 155 min; free for this public repo (standard runners) |
 
 ---
@@ -1007,3 +1009,18 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
   (`rhysd/actionlint`).
 - The base disk layer on the first runner build was 9.88e9 bytes (9.20 GiB), the same as the W4 build (9.23 GiB; the
   Image gate and W4 figures are GiB). In decimal GB that is close to GHCR's 10 GB layer limit (§8).
+- First actions-test run (45092320697) failed in the migration seed: Test Monitor and asset bulk creates return
+  **200 with a `failed` list** (`Skyline.UnknownWorkspace`, `UserDoesNotHaveCreatePrivilegeInWorkspace`) while a new
+  workspace propagates, so the seed went on with nothing created. `Seed.ps1` `New-Bulk` now throws on any failed
+  item or a wrong count, inside the workspace retry (mraj-sls-container `1264f5a`, sls-test `20284c7`).
+- W6B.5 green (run 45099474477, `config=migration`, `push=true`): base built in 1 attempt on EPYC 7763 (62.5 min),
+  migration config in 1 attempt (11.4 min), pushed to the new public package `ghcr.io/rajsite/sls-server-actions-test`
+  (`26.5.1-20261123`, `26.5`, `r2`, `-migration` tags). Local-image start: healthy 210 s, ready 230 s. Registry start
+  on a fresh Xeon 8573C runner: pull 192 s, healthy 169.5 s, ready 182.5 s. Both starts: all 10 coverage rows ok and
+  `Seed.ps1 -Verify` found the seeded data. Log artifact scan: no secrets in 41 files.
+- **First push of a new GHCR package is `denied` after the layers upload** (seen once, W6B.5): the retry (60 s later)
+  found every layer and pushed the manifest. The `Push-SlsImage` retries cover it; a first push without retries
+  would fail. The push guard then saw the package as existing and public (`GITHUB_TOKEN` can read the packages API of
+  this repository's package).
+- W6B.6 smoke soak (run 45099504417) green: `sls-build-image` built in 1 attempt (Xeon 8370C, ~60 min), 1 × 5-min
+  job healthy in 279 s, 45 iterations, 284 ops ok, 0 failed; artifacts keep no secrets.
