@@ -48,7 +48,9 @@ $repo = Get-SlsRepoRoot
 
 if (-not (Test-SlsImage $BaseImage)) { throw "base image $BaseImage not found" }
 if ($Seed) { $Seed = (Resolve-Path $Seed).Path }
-$LicenseFile = @($LicenseFile | ForEach-Object { (Resolve-Path $_ -ErrorAction Stop).Path })
+# pwsh -File passes an array as one comma-separated string.
+$ExtraTag = @($ExtraTag | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$LicenseFile = @($LicenseFile | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { (Resolve-Path $_ -ErrorAction Stop).Path })
 if (-not $Tag) {
     $i = $BaseImage.LastIndexOf(':')
     $Tag = if ($i -gt $BaseImage.LastIndexOf('/')) { "$($BaseImage.Substring(0, $i)):$($BaseImage.Substring($i + 1))-$Name" } else { "${BaseImage}:latest-$Name" }

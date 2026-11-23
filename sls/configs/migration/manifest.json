@@ -1,0 +1,106 @@
+{
+  "description": "Migration seed data (sls-test docs/workflow-test-plan.md W5.3). Seed.ps1 creates and verifies it; migration tests read the same file for expected values.",
+  "version": 1,
+  "workspaces": ["mig-ws-a", "mig-ws-b"],
+  "users": [
+    { "login": "mig-user-1", "firstName": "Mig", "lastName": "Operator", "email": "mig-user-1@example.com", "keywords": ["mig"], "properties": { "team": "test-a" } },
+    { "login": "mig-user-2", "firstName": "Mig", "lastName": "Engineer", "email": "mig-user-2@example.com", "keywords": ["mig"], "properties": { "team": "test-b" } }
+  ],
+  "files": [
+    { "name": "mig-file-a1.txt", "workspace": "mig-ws-a", "properties": { "migKey": "file-a1", "station": "A1" }, "lines": 200 },
+    { "name": "mig-file-a2.csv", "workspace": "mig-ws-a", "properties": { "migKey": "file-a2", "station": "A2" }, "lines": 50 },
+    { "name": "mig-file-b1.txt", "workspace": "mig-ws-b", "properties": { "migKey": "file-b1", "station": "B1" }, "lines": 100 },
+    { "name": "mig-file-b2.log", "workspace": "mig-ws-b", "properties": { "migKey": "file-b2", "station": "B2" }, "lines": 25 }
+  ],
+  "products": [
+    { "partNumber": "MIG-PN-100", "name": "mig-product-100", "family": "mig-family", "keywords": ["mig"], "properties": { "revision": "A", "line": "1" } },
+    { "partNumber": "MIG-PN-200", "name": "mig-product-200", "family": "mig-family", "keywords": ["mig"], "properties": { "revision": "B", "line": "2" } }
+  ],
+  "resultDefaults": {
+    "programName": "mig-test-program",
+    "startedAtBase": "2025-06-01T08:00:00Z",
+    "operator": "mig-user-1",
+    "hostName": "mig-tester"
+  },
+  "results": [
+    { "serialNumber": "MIG-SN-01", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "PASSED", "steps": "flat2", "files": ["mig-file-a1.txt"] },
+    { "serialNumber": "MIG-SN-02", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "FAILED", "steps": "nested3" },
+    { "serialNumber": "MIG-SN-03", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "ERRORED", "steps": "nested4" },
+    { "serialNumber": "MIG-SN-04", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "PASSED", "steps": "nested3" },
+    { "serialNumber": "MIG-SN-05", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "PASSED", "steps": "nested4", "files": ["mig-file-b1.txt"] },
+    { "serialNumber": "MIG-SN-06", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "FAILED", "steps": "flat2" },
+    { "serialNumber": "MIG-SN-07", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "PASSED", "steps": "nested3" },
+    { "serialNumber": "MIG-SN-08", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "ERRORED", "steps": "flat2" },
+    { "serialNumber": "MIG-SN-09", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "RUNNING", "steps": "flat2" },
+    { "serialNumber": "MIG-SN-10", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "RUNNING", "steps": "nested3" },
+    { "serialNumber": "MIG-SN-11", "partNumber": "MIG-PN-100", "workspace": "mig-ws-a", "status": "CUSTOM", "statusName": "Retest", "steps": "nested4" },
+    { "serialNumber": "MIG-SN-12", "partNumber": "MIG-PN-200", "workspace": "mig-ws-b", "status": "CUSTOM", "statusName": "Quarantine", "steps": "flat2" }
+  ],
+  "stepTemplates": {
+    "flat2": [
+      { "stepId": "s1", "name": "Initialize", "stepType": "Action" },
+      { "stepId": "s2", "name": "Measure current", "stepType": "NumericLimitTest", "inputs": { "channel": "ai1" }, "outputs": { "current": 0.12 },
+        "measurement": { "name": "Current", "value": 0.12, "low": 0.1, "high": 0.2, "units": "A" } }
+    ],
+    "nested3": [
+      { "stepId": "s1", "name": "Power tests", "stepType": "SequenceCall", "children": [
+        { "stepId": "s1a", "name": "Measure voltage", "stepType": "NumericLimitTest", "inputs": { "channel": "ai0" }, "outputs": { "voltage": 4.98 },
+          "measurement": { "name": "Voltage", "value": 4.98, "low": 4.5, "high": 5.5, "units": "V" } },
+        { "stepId": "s1b", "name": "Measure ripple", "stepType": "NumericLimitTest", "inputs": { "channel": "ai0" }, "outputs": { "ripple": 0.02 },
+          "measurement": { "name": "Ripple", "value": 0.02, "low": 0, "high": 0.05, "units": "V" } }
+      ] }
+    ],
+    "nested4": [
+      { "stepId": "s1", "name": "Communication tests", "stepType": "SequenceCall", "children": [
+        { "stepId": "s1a", "name": "Read firmware", "stepType": "StringValueTest", "inputs": { "port": "COM1" }, "outputs": { "firmware": "1.2.3" } },
+        { "stepId": "s1b", "name": "Loopback", "stepType": "PassFailTest", "inputs": { "bytes": 64 }, "outputs": { "errors": 0 } }
+      ] },
+      { "stepId": "s2", "name": "Cleanup", "stepType": "Action" }
+    ]
+  },
+  "feeds": [
+    { "name": "mig-feed", "workspace": "mig-ws-a", "description": "Migration test feed", "stateUrlBase": "http://localhost",
+      "packages": [ { "name": "mig-test-package", "version": "1.0.0" } ] }
+  ],
+  "assets": [
+    { "name": "mig-asset-a", "workspace": "mig-ws-a", "modelName": "mig-dmm", "serialNumber": "MIG-AS-01", "vendorName": "NI", "busType": "USB",
+      "calibrations": [
+        { "date": "2025-01-15T00:00:00Z", "operator": "Jane Calibrator", "comments": "mig cal 1" },
+        { "date": "2025-07-15T00:00:00Z", "operatorUser": "mig-user-1", "comments": "mig cal 2" }
+      ] },
+    { "name": "mig-asset-b", "workspace": "mig-ws-b", "modelName": "mig-scope", "serialNumber": "MIG-AS-02", "vendorName": "NI", "busType": "TCP_IP",
+      "calibrations": [
+        { "date": "2025-02-10T00:00:00Z", "operator": "John Metrologist", "comments": "mig cal 1" },
+        { "date": "2025-08-10T00:00:00Z", "operatorUser": "mig-user-2", "comments": "mig cal 2" }
+      ] },
+    { "name": "mig-asset-default", "workspace": "Default", "modelName": "mig-psu", "serialNumber": "MIG-AS-03", "vendorName": "NI", "busType": "GPIB",
+      "calibrations": [
+        { "date": "2025-03-05T00:00:00Z", "operator": "Jane Calibrator", "comments": "mig cal 1" },
+        { "date": "2025-09-05T00:00:00Z", "operator": "John Metrologist", "comments": "mig cal 2" }
+      ] }
+  ],
+  "states": [
+    { "name": "mig-state-a", "workspace": "mig-ws-a", "feed": "mig-feed", "packages": [ { "name": "mig-test-package", "version": "1.0.0" } ] },
+    { "name": "mig-state-b", "workspace": "mig-ws-b", "feed": "mig-feed", "packages": [ { "name": "mig-test-package", "version": "1.0.0" } ] }
+  ],
+  "outOfScope": {
+    "tags": [
+      { "path": "mig.tag.temperature", "type": "DOUBLE", "value": "21.5" },
+      { "path": "mig.tag.pressure", "type": "DOUBLE", "value": "101.3" },
+      { "path": "mig.tag.count", "type": "INT", "value": "42" },
+      { "path": "mig.tag.enabled", "type": "BOOLEAN", "value": "True" },
+      { "path": "mig.tag.label", "type": "STRING", "value": "mig" }
+    ],
+    "alarms": [
+      { "alarmId": "mig-alarm-1", "workspace": "mig-ws-a", "displayName": "mig alarm 1", "channel": "mig.tag.temperature", "severityLevel": 2, "condition": "High" }
+    ],
+    "userData": [
+      { "application": "mig-app", "category": "preferences", "name": "mig-userdata-1", "value": { "theme": "dark", "pageSize": 50 } }
+    ]
+  },
+  "notSeeded": {
+    "systems": "manual preparation; a container has no managed systems",
+    "roles": "manual preparation",
+    "roleMappings": "manual preparation; created users have no policies"
+  }
+}

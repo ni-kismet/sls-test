@@ -3,6 +3,6 @@
 Mirrored by `scripts/Sync-SlsTooling.ps1`; do not edit here, change the source and sync again.
 
 - Repository: mraj-sls-container
-- Commit: `c216896ccf82baee52c90435889bc7d7b285f0c1` (Soak harness: stop code OCR tolerates a stray character before 'Stop code' (tesseract on GitHub runners))
-- Folders: build, image, testkit, configs (30 files)
-- Synced: 2026-11-22 06:23 UTC
+- Commit: `8fbcec5e7a647e89f7d45f279bbd5fa476c9b150` (Build scripts: accept comma-separated list parameters)
+- Folders: build, image, testkit, configs (32 files)
+- Synced: 2026-11-23 00:52 UTC

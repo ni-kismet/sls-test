@@ -65,6 +65,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'SlsBuild.psm1') -Force
 Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'testkit\SlsTestKit.psm1') -Force
+# pwsh -File passes an array as one comma-separated string.
+$Packages = @($Packages | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$Feeds = @($Feeds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$ExtraTag = @($ExtraTag | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$LicenseFile = @($LicenseFile | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $StageNames = @('Install', 'Seal', 'Convert', 'Image', 'Verify')
 $repo = Get-SlsRepoRoot
 
