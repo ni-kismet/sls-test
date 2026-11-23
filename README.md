@@ -14,6 +14,7 @@ from its source repository ([sls/SOURCE.md](sls/SOURCE.md)) with `scripts/Sync-S
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `probe` | manual | Prints runner resources (CPU, RAM, disk, KVM, Docker) after host preparation. |
+| `build-images` | manual | Builds the base image (or takes an existing one with `base-image`), seeds each configuration in parallel from the base digest, pushes all of them with immutable tags, then moves the floating tags (`26.5`, `26.5.1`, `26.5-<config>`, `26.5.1-<config>`) and uploads `images.json` (artifact `images`). `repository` selects the package (default `ghcr.io/rajsite/sls-server`). |
 | `actions-test` | manual | Exercises the actions below: build (base, optionally seeded and pushed), start, check; with `push`, starts the pushed image on a second runner. |
 | `soak` | manual | Stability soak: many fresh containers per runner, report per host CPU. |
 | `soak-image` | manual | Builds the base image on a hosted runner and records build attempts and VM bugchecks; optional push. |
@@ -78,7 +79,9 @@ jobs:
 Builds the base image (Windows + NI Package Manager + SystemLink Server and modules, about 70–90 minutes) with up to
 `max-attempts` attempts (a build VM bugcheck restarts with a fresh install, `on-bugcheck`), then optionally a seeded
 configuration image (`<base tag>-<config>`), then pushes. `base-image` seeds an existing image instead of building a
-base. `reject-cpus` fails fast on host CPU models known to crash builds. Writes a job summary and uploads leak-checked
+base (a tag or a digest; for a digest the seeded tag is the base's `<x.y.z>-<yyyyMMdd>` tag plus `-<config>`).
+`floating-tag: 'false'` pushes the base without its moving `<sls-version>` tag (build-images moves it after all seeds
+pass). `reject-cpus` fails fast on host CPU models known to crash builds. Writes a job summary and uploads leak-checked
 logs (`upload-logs`).
 
 **Push guard:** the push fails when the package does not exist yet unless `allow-new-package: 'true'`. A first push

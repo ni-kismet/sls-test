@@ -35,28 +35,28 @@ Status legend: `[ ]` open, `[x]` done, `[~]` partial / deviates (see note).
 workflow_dispatch
       │
 build-images.yml ──────────────────────────────────────────────────────────────────────────────────────
-  base (≈75–120 min)              seed [demo, migration] (matrix, ≈10–20 min each)      promote (≈1 min)
-  Build-SlsImage.ps1       ──►    New-SlsConfigImage.ps1 -BaseImage <base digest>  ──►  imagetools create
-  server + 3 modules              push :26.5-<cfg>-r<N>                                 :26.5  :26.5.1
-  push :26.5.1-<date>-r<N>                                                              :26.5-demo
-                                                                                        :26.5-migration
-  artifact images.json (all digests)
+  base (≈60–100 min)              seed [demo, migration] (matrix, ≈15–20 min each)      promote (≈1 min)
+  sls-build-image          ──►    sls-build-image base-image=<base digest>         ──►  Publish-SlsImages.ps1
+  server + 3 modules              config=<cfg>                                          (registry manifest copy)
+  push :26.5.1-<date>, :r<N>      push :26.5.1-<date>-<cfg>, :r<N>-<cfg>                :26.5  :26.5.1
+  (or base-image: an existing                                                           :26.5[.1]-demo
+   base, resolved to its digest)                                                        :26.5[.1]-migration
+                                                                                        artifact images (images.json)
 ───────────────────────────────────────────────────────────────────────────────────────────────────────
       │ workflow_run (success)                            │ workflow_run (success)
 e2e-demo.yml ──► _sls-e2e.yml                             e2e-migration.yml ──► _sls-e2e.yml
                  (demo digest, project=demo)                                    (migration digest, project=migration)
-                 pull → run → healthy → Playwright → leak-guarded artifacts
+                 sls-start-server → Playwright → sls-collect-logs (leak-guarded artifacts)
 ```
 
 Image tags (all in `ghcr.io/rajsite/sls-server`):
 
 | Tag | Written by | Mutable |
 |-----|-----------|---------|
-| `26.5.1-<yyyymmdd>-r<run>` | base job | no |
-| `26.5-demo-r<run>`, `26.5-migration-r<run>` | seed jobs | no |
+| `26.5.1-<yyyymmdd>`, `r<run>` | base job | `26.5.1-<yyyymmdd>` only by a same-day rebuild |
+| `26.5.1-<yyyymmdd>-<cfg>`, `r<run>-<cfg>` | seed jobs | as above |
 | `26.5`, `26.5.1` | promote | yes |
-| `26.5-demo`, `26.5-migration` | promote | yes |
-
+| `26.5-<cfg>`, `26.5.1-<cfg>` | promote | yes |
 Floating tags move only after base **and** both seeds (each with its verify step) succeed.
 
 ---
@@ -119,7 +119,7 @@ Everything printed to workflow logs and every uploaded artifact is world-readabl
 | **Leak guard** | `scripts/Test-NoSecret.ps1` scans every staged directory before upload (plain files **and** the contents of `.zip` traces and `.tgz`/`.tar.gz` log archives; an unreadable archive counts as a hit) for the admin password, the VM password and the license file contents. On a hit it deletes the staging directory and fails the step, so nothing is uploaded; it prints only the file name, never the match. |
 | Artifact retention | `retention-days: 7`. |
 | Fork PRs | Approval required for all outside contributors (set). Workflows never use `pull_request_target`. PR-triggered e2e jobs run only for same-repo branches (`github.event.pull_request.head.repo.full_name == github.repository`); fork PRs get no secrets. |
-| Package visibility | Verified **Private** after the first push (W8.7). **A package first published by this public repo's `GITHUB_TOKEN` is public** (W4B.7: anonymous pull worked; deleted within 4 min). Before W8: create the package as Private (first push from a personal token, or flip it in the package settings before anything sensitive is pushed), then grant `sls-test` write access under "Manage Actions access". The image contains Windows Server evaluation and NI software and the admin account set from `SLS_ADMIN_PASSWORD`. |
+| Package visibility | Verified **Private** after the first push (W8.6; the agent tests `build-images` only against the public test package `sls-server-actions-test`). **A package first published by this public repo's `GITHUB_TOKEN` is public** (W4B.7: anonymous pull worked; deleted within 4 min). Before W8: create the package as Private (first push from a personal token, or flip it in the package settings before anything sensitive is pushed), then grant `sls-test` write access under "Manage Actions access". The image contains Windows Server evaluation and NI software and the admin account set from `SLS_ADMIN_PASSWORD`. |
 
 Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, `install/**`, `seal/**`, `agent/**`,
 `context.json`) contain neither password.
@@ -580,68 +580,11 @@ pushed. The W4B soaks replace the old W8.7a.
 
 ## 5. Workflow sketches
 
-### build-images.yml (shape)
+### build-images.yml
 
-```yaml
-name: build-images
-on:
-  workflow_dispatch:
-    inputs:
-      sls_version: { type: string, default: '26.5' }
-      packages:    { type: string, default: 'ni-systemlink-server,ni-systemlink-software-config-module,ni-systemlink-test-module,ni-systemlink-asset-module' }
-      configs:     { type: string, default: 'demo,migration' }
-      ram:         { type: string, default: '12G' }
-      cpu:         { type: string, default: '4' }
-      promote:     { type: boolean, default: true }
-permissions: { contents: read, packages: write }
-concurrency: build-images
-env:
-  REPO: ghcr.io/rajsite/sls-server
-jobs:
-  matrix:
-    runs-on: ubuntu-latest
-    outputs: { configs: '${{ steps.m.outputs.configs }}' }
-    steps:
-      - id: m
-        shell: pwsh
-        run: '"configs=$((''${{ inputs.configs }}'' -split '','' | Where-Object { $_ } | ConvertTo-Json -AsArray -Compress))" >> $env:GITHUB_OUTPUT'
-  base:
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
-    outputs:
-      image: ${{ steps.push.outputs.image }}
-      full_version: ${{ steps.build.outputs.sls_full_version }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/sls-host-prep
-      - id: build
-        shell: pwsh
-        env: { SLS_BUILD_ADMIN_PASSWORD: '${{ secrets.SLS_ADMIN_PASSWORD }}' }
-        run: >-
-          ./sls/build/Build-SlsImage.ps1 -SlsVersion ${{ inputs.sls_version }} -Packages ('${{ inputs.packages }}' -split ',')
-          -Repository $env:REPO -BuildId gh-${{ github.run_id }} -Ram ${{ inputs.ram }} -Cpu ${{ inputs.cpu }}
-      - id: push
-        shell: pwsh
-        run: ./scripts/Push-SlsImage.ps1 -Image '${{ steps.build.outputs.image }}' -Tag '<full>-<date>-r${{ github.run_number }}'
-      - if: always()
-        uses: ./.github/actions/sls-upload-logs
-        with: { name: base-logs, path: 'sls/out/builds/gh-${{ github.run_id }}' }
-  seed:
-    needs: [matrix, base]
-    if: needs.matrix.outputs.configs != '[]'
-    strategy:
-      fail-fast: false
-      matrix: { config: '${{ fromJSON(needs.matrix.outputs.configs) }}' }
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    steps: [ prep, pull base digest, New-SlsConfigImage.ps1, push, seed-<cfg>.json artifact, logs ]
-  promote:
-    needs: [base, seed]
-    if: inputs.promote
-    runs-on: ubuntu-latest
-    steps: [ login, imagetools create (floating tags), images.json artifact, job summary ]
-```
-
+Implemented (W8.3): see `.github/workflows/build-images.yml`. Shape: `matrix` → `base` (`sls-build-image`, push
+without the floating tag, or resolve `base-image`) → `seed` (matrix; `sls-build-image` with `base-image: <digest>`)
+→ `promote` (`scripts/ci/Publish-SlsImages.ps1`, artifact `images`).
 ### e2e-migration.yml (shape; e2e-demo.yml is the same with `demo`)
 
 ```yaml
@@ -660,7 +603,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { actions: read }
     outputs: { image: '${{ steps.r.outputs.image }}' }
-    steps: [ workflow_run: download the `images` artifact of the triggering run and pick .migration; otherwise the input or floating tag ]
+    steps: [ workflow_run: download the `images` artifact of the triggering run and pick .configs.migration.image; otherwise the input or floating tag ]
   e2e:
     needs: resolve
     uses: ./.github/workflows/_sls-e2e.yml
@@ -687,6 +630,7 @@ scripts/Invoke-SlsBuild.ps1                 build with retry/resume (W4B, reused
 scripts/Get-SoakSummary.ps1                 soak results → Markdown (W4B)
 scripts/ci/{host-facts,host-prep}.sh            shared by the actions (W6B)
 scripts/ci/{Build-SlsCi,Start-SlsCi,Collect-SlsLogs,Test-SlsActionsRun}.ps1
+scripts/ci/Publish-SlsImages.ps1               W8 promote (images.json, floating tags)
 .github/actions/sls-host-prep/action.yml
 .github/actions/sls-build-image/action.yml     W6B
 .github/actions/sls-start-server/action.yml    W6B
@@ -695,7 +639,7 @@ scripts/ci/{Build-SlsCi,Start-SlsCi,Collect-SlsLogs,Test-SlsActionsRun}.ps1
 .github/workflows/actions-test.yml            W6B.5
 .github/workflows/soak-image.yml            W4B test image build (package sls-server-soak)
 .github/workflows/soak.yml                  W4B stability soak across runners
-.github/workflows/build-images.yml
+.github/workflows/build-images.yml            W8
 .github/workflows/_sls-e2e.yml
 .github/workflows/e2e-demo.yml
 .github/workflows/e2e-migration.yml
