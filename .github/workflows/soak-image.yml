@@ -18,10 +18,17 @@ on:
       min-free-gb:
         description: Docker free GB required by sls-host-prep
         default: '60'
+      on-bugcheck:
+        description: After a build VM bugcheck past Install, restart (fresh Install) or resume the stage
+        type: choice
+        options: [restart, resume]
+        default: restart
       push:
-        description: >-
-          Push to ghcr.io/rajsite/sls-server-soak. A package first published by this public repo's GITHUB_TOKEN is
-          PUBLIC; only push after the package exists as Private (§10 W4B)
+        description: Push to ghcr.io/rajsite/sls-server-soak
+        type: boolean
+        default: false
+      allow-new-package:
+        description: Let the push create the package (from this public repo's GITHUB_TOKEN a new package is PUBLIC)
         type: boolean
         default: false
 
@@ -31,9 +38,6 @@ permissions:
 
 concurrency: soak-image
 
-env:
-  REPO: ghcr.io/rajsite/sls-server-soak
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,95 +45,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Host CPU and KVM
-        run: |
-          lscpu | grep -E '^(Model name|Vendor ID|Virtualization|Hypervisor vendor|CPU\(s\))'
-          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] || continue; for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
-          echo "kvm: $kvm"
-          echo "Host CPU: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p') (hypervisor $(lscpu | sed -n 's/^Hypervisor vendor:[[:space:]]*//p')); kvm: $kvm" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Host prep
-        uses: ./.github/actions/sls-host-prep
-        with:
-          min-free-gb: ${{ inputs.min-free-gb }}
-          registry-login: 'true'
-
       - name: Build
-        id: build
-        env:
-          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
-          RAM: ${{ inputs.ram }}
-          CPU: ${{ inputs.cpu }}
-          MAX_ATTEMPTS: ${{ inputs.max-attempts }}
-        run: >
-          pwsh -NoProfile -File scripts/Invoke-SlsBuild.ps1 -BuildId gh-${{ github.run_id }}
-          -MaxAttempts "$MAX_ATTEMPTS" -Repository "$REPO" -Ram "$RAM" -Cpu "$CPU" -ExtraTag r${{ github.run_number }}
-
-      - name: Push
-        id: push
-        if: inputs.push
-        env:
-          IMAGE: ${{ steps.build.outputs.image }}
-          RUN_TAG: ${{ env.REPO }}:r${{ github.run_number }}
-        run: |
-          df -h /
-          start=$(date +%s)
-          for t in "$IMAGE" "$RUN_TAG"; do
-            for i in 1 2 3; do
-              docker push "$t" && break
-              [ "$i" = 3 ] && { echo "::error::push of $t failed 3 times"; exit 1; }
-              sleep $((i * 60))
-            done
-          done
-          digest=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" | grep "^$REPO@" | head -1)
-          echo "pushed $digest in $(( ($(date +%s) - start) / 60 )) min"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "push-min=$(( ($(date +%s) - start) / 60 ))" >> "$GITHUB_OUTPUT"
-
-      - name: Summary
-        if: always()
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-          PUSH_MIN: ${{ steps.push.outputs.push-min }}
-          BUILD_ID: ${{ steps.build.outputs.final_build_id }}
-        shell: pwsh
-        run: |
-          $md = @("## soak-image", '')
-          $att = "sls/out/builds/attempts-gh-${{ github.run_id }}.json"
-          if (Test-Path $att) {
-            $md += '| attempt | build | from | minutes | result | failed stage | bugcheck | message |', '|---|---|---|---|---|---|---|---|'
-            foreach ($a in @(Get-Content $att -Raw | ConvertFrom-Json)) {
-              $md += "| $($a.attempt) | $($a.buildId) | $($a.from) | $($a.minutes) | $($a.result) | $($a.stage) | $($a.bugcheck) | $("$($a.message)" -replace '\|', '/') |"
-            }
-          }
-          $bj = "sls/out/builds/$env:BUILD_ID/build.json"
-          if ($env:BUILD_ID -and (Test-Path $bj)) {
-            $b = Get-Content $bj -Raw | ConvertFrom-Json
-            $md += '', "Stages (min): $(($b.stagesSec.PSObject.Properties | ForEach-Object { "$($_.Name) $([math]::Round($_.Value / 60, 1))" }) -join ', ')"
-            $md += "Image: $($b.image), $([math]::Round($b.sizes.imageBytes / 1GB, 2)) GB, disk layer $([math]::Round($b.sizes.qcow2Bytes / 1GB, 2)) GB; SystemLink $($b.versions.systemlinkServer)"
-          }
-          if ($env:DIGEST) { $md += "Pushed: ``$env:DIGEST`` (push $env:PUSH_MIN min)" }
-          $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY
-
-      - name: Stage logs
-        id: stage
-        if: always()
-        env:
-          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/upload"
-          if [ -d sls/out/builds ]; then
-            rsync -a --exclude credentials.json --exclude 'oem/' --exclude ca-certificates.crt \
-              --exclude '*.qcow2' --exclude '*.img' --exclude '*.iso' --exclude '*.lic' sls/out/builds/ "$RUNNER_TEMP/upload/"
-          fi
-          pwsh -NoProfile -File scripts/Test-NoSecret.ps1 -Path "$RUNNER_TEMP/upload"
-
-      - name: Upload logs
-        # Only after the leak guard passed (it deletes the staged files and fails on a hit).
-        if: always() && steps.stage.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/sls-build-image
         with:
-          name: soak-image-logs
-          path: ${{ runner.temp }}/upload
-          if-no-files-found: ignore
-          retention-days: 7
+          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          repository: ghcr.io/rajsite/sls-server-soak
+          tags: r${{ github.run_number }}
+          ram: ${{ inputs.ram }}
+          cpu: ${{ inputs.cpu }}
+          max-attempts: ${{ inputs.max-attempts }}
+          on-bugcheck: ${{ inputs.on-bugcheck }}
+          min-free-gb: ${{ inputs.min-free-gb }}
+          push: ${{ inputs.push }}
+          allow-new-package: ${{ inputs.allow-new-package }}
+          log-artifact: soak-image-logs

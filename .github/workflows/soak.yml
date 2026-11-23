@@ -55,19 +55,14 @@ jobs:
         runner: ${{ fromJSON(needs.matrix.outputs.runners) }}
     env:
       OUT: sls/out/stability/r${{ matrix.runner }}
-      BUILD_ID: gh-${{ github.run_id }}-r${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Host facts
-        run: |
-          mkdir -p "$OUT"
-          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
-          hv=$(lscpu | sed -n 's/^Hypervisor vendor:[[:space:]]*//p')
-          kvm=$(for m in kvm_amd kvm_intel; do [ -d /sys/module/$m ] || continue; for f in /sys/module/$m/parameters/*; do printf '%s=%s ' "$(basename $f)" "$(cat $f)"; done; done)
-          jq -n --arg cpu "$cpu" --arg hv "$hv" --arg kvm "$kvm" --arg runner "${{ matrix.runner }}" \
-            '{runner: $runner, cpu: $cpu, hypervisor: $hv, kvm: $kvm}' > "$OUT/runner.json"
-          cat "$OUT/runner.json"
+        env:
+          FACTS_DIR: ${{ env.OUT }}
+          RUNNER_ID: ${{ matrix.runner }}
+        run: bash scripts/ci/host-facts.sh
 
       - name: Host prep
         uses: ./.github/actions/sls-host-prep
@@ -83,14 +78,16 @@ jobs:
       - name: Build image
         id: build
         if: inputs.image == ''
-        env:
-          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
-        run: |
-          rc=0
-          pwsh -NoProfile -File scripts/Invoke-SlsBuild.ps1 -BuildId "$BUILD_ID" -MaxAttempts 3 \
-            -Repository sls-server-soak -Ram 10G -Cpu 4 || rc=$?
-          cp "sls/out/builds/attempts-$BUILD_ID.json" "$OUT/build-attempts.json" 2>/dev/null || true
-          exit $rc
+        uses: ./.github/actions/sls-build-image
+        with:
+          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          repository: sls-server-soak
+          host-prep: 'false'
+          log-artifact: build-logs-r${{ matrix.runner }}
+
+      - name: Build attempts
+        if: always() && inputs.image == ''
+        run: cp sls/out/builds/attempts-*.json "$OUT/build-attempts.json" 2>/dev/null || true
 
       - name: Pull image
         id: pull
@@ -121,28 +118,13 @@ jobs:
           pwsh -NoProfile -File scripts/Get-SoakSummary.ps1 -Path "$OUT" | tee -a "$GITHUB_STEP_SUMMARY"
           test -s "$OUT/jobs.jsonl" || { echo "::error::no soak job recorded"; exit 1; }
 
-      - name: Leak guard
-        id: guard
-        if: always()
-        env:
-          SLS_BUILD_ADMIN_PASSWORD: ${{ secrets.SLS_ADMIN_PASSWORD }}
-        run: |
-          # Build logs and reports next to the soak results (no credentials, OEM files or disks).
-          if [ -d "sls/out/builds/$BUILD_ID" ]; then
-            rsync -a --exclude credentials.json --exclude 'oem/' --exclude ca-certificates.crt \
-              --exclude '*.qcow2' --exclude '*.img' --exclude '*.iso' --exclude '*.lic' \
-              "sls/out/builds/$BUILD_ID/" "$OUT/build/"
-          fi
-          pwsh -NoProfile -File scripts/Test-NoSecret.ps1 -Path "$OUT"
-
       - name: Upload
-        if: always() && steps.guard.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: ./.github/actions/sls-collect-logs
         with:
-          name: soak-${{ matrix.runner }}
+          artifact: soak-${{ matrix.runner }}
           path: ${{ env.OUT }}
-          if-no-files-found: ignore
-          retention-days: 7
+          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
 
   summary:
     needs: soak

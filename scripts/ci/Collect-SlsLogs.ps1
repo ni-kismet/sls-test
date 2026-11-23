@@ -23,7 +23,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$exclude = @('credentials.json', 'ca-certificates.crt', '*.qcow2', '*.img', '*.iso', '*.lic', '*.ppm')
+$exclude = @('credentials.json', 'ca-certificates.crt', '*.qcow2', '*.img', '*.iso', '*.lic')
 $excludeDir = @('oem', '.auth', 'sls-licenses', 'licenses')
 
 function Copy-Clean([IO.FileSystemInfo]$Item, [string]$Dest) {
