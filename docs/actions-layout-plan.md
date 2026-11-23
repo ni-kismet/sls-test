@@ -78,11 +78,11 @@ README.md, LICENSE
 - [x] L3.3 `$env:SLS_TESTKIT` points at `SlsTestKit.psm1` for seed scripts; built-in seeds use it (with a relative
   fallback for local runs).
 - [x] L3.4 `tests/seed/Seed.ps1`: small custom seed (tags, file) with `-Verify`, written as another repository would.
-- [ ] L3.5 `docs/seeds.md`: contract, testkit helpers, base-once/seed-many pattern.
+- [x] L3.5 `docs/seeds.md`: contract, testkit helpers, base-once/seed-many pattern.
 
 ### L4. Inputs and tags
 
-- [ ] L4.1 Remove `on-bugcheck` (always restart from Install), `allow-new-package` and `sls-start-server` `pull`
+- [x] L4.1 Remove `on-bugcheck` (always restart from Install), `allow-new-package` and `sls-start-server` `pull`
   (pulls when missing). Group the remaining advanced inputs in the docs.
 - [x] L4.2 Dated tags unique per build: base `<x.y.z>-<yyyyMMdd>-<HHmm>` (UTC build time), seeded
   `<x.y.z>-<yyyyMMdd>-<HHmm>-<config>` (UTC seed time), so a same-day rebuild or re-seed never overwrites a tag.
@@ -107,10 +107,10 @@ README.md, LICENSE
 
 ### L6. Docs and release
 
-- [ ] L6.1 README: what it is, quick start (build + seed + push; start + test), per-action inputs/outputs (main and
+- [x] L6.1 README: what it is, quick start (build + seed + push; start + test), per-action inputs/outputs (main and
   advanced), custom seeds, local use, limits.
-- [ ] L6.2 `docs/local.md` (compose, testkit, local builds); `docs/workflow-test-plan.md` → `docs/history/`.
-- [ ] L6.3 `LICENSE` (MIT).
+- [x] L6.2 `docs/local.md` (compose, testkit, local builds); `docs/workflow-test-plan.md` → `docs/history/`.
+- [x] L6.3 `LICENSE` (MIT).
 - [ ] L6.4 Tag `v1.0.0` and the moving `v1` once green.
 
 ### L7. Verification
