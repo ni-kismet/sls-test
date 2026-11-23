@@ -1,0 +1,206 @@
+name: build-images
+
+# W8: builds the SystemLink Server images and publishes them to ghcr.io. Manual dispatch only (D3).
+#   base     sls-build-image: base image, pushed with its immutable tags only (<x.y.z>-<yyyyMMdd>, r<run>); or, with
+#            the base-image input, an existing base resolved to its digest (re-seed without a 60-90 min base build)
+#   seed     one job per configuration (parallel, fresh runners): sls-build-image seeds the base digest, pushes
+#            <x.y.z>-<yyyyMMdd>-<config> and r<run>-<config>, records its digest (artifact image-<config>)
+#   promote  after every image of the run is pushed: images.json (artifact images, read by the e2e workflows), job
+#            summary, and with promote the floating tags <sls-version>[-<config>] and <x.y.z>[-<config>]
+
+on:
+  workflow_dispatch:
+    inputs:
+      sls-version:
+        description: SystemLink Server feed version
+        default: '26.5'
+      packages:
+        description: NI packages, comma separated ('' = server + Software Configuration, Test and Asset modules)
+        default: ''
+      configs:
+        description: Seeded images to build, comma separated ('' = base only)
+        default: demo,migration
+      base-image:
+        description: Seed this existing base image (tag or digest in the repository) instead of building one
+        default: ''
+      promote:
+        description: Move the floating tags to the new images
+        type: boolean
+        default: true
+      repository:
+        description: Image repository
+        default: ghcr.io/rajsite/sls-server
+      allow-new-package:
+        description: Allow the first push to create the package (from this public repo it becomes PUBLIC)
+        type: boolean
+        default: false
+      reject-cpus:
+        description: Host CPU models to fail fast on (extended regex)
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency: build-images
+
+env:
+  REPOSITORY: ${{ inputs.repository }}
+  SLS_VERSION: ${{ inputs.sls-version }}
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.m.outputs.configs }}
+    steps:
+      - id: m
+        shell: pwsh
+        env:
+          CONFIGS: ${{ inputs.configs }}
+        run: |
+          $c = @($env:CONFIGS -split '[,\s]+' | Where-Object { $_ })
+          foreach ($n in $c) { if ($n -notmatch '^[a-z0-9][a-z0-9-]*$') { throw "invalid configuration name '$n'" } }
+          "configs=$(ConvertTo-Json -InputObject $c -AsArray -Compress)" | Add-Content $env:GITHUB_OUTPUT
+
+  base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build base
+        id: build
+        if: inputs.base-image == ''
+        uses: ./.github/actions/sls-build-image
+        with:
+          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          repository: ${{ env.REPOSITORY }}
+          sls-version: ${{ env.SLS_VERSION }}
+          packages: ${{ inputs.packages }}
+          tags: r${{ github.run_number }}
+          reject-cpus: ${{ inputs.reject-cpus }}
+          push: 'true'
+          floating-tag: 'false'
+          allow-new-package: ${{ inputs.allow-new-package }}
+          log-artifact: base-logs
+
+      - name: Existing base
+        id: existing
+        if: inputs.base-image != ''
+        shell: pwsh
+        env:
+          REF: ${{ inputs.base-image }}
+          TOKEN: ${{ github.token }}
+        run: |
+          $name = $env:REPOSITORY -replace '^ghcr\.io/', ''
+          if ($env:REF -notmatch "^$([regex]::Escape($env:REPOSITORY))(:(?<tag>[\w.-]+)|@(?<digest>sha256:[0-9a-f]{64}))$") {
+            throw "base-image must be ${env:REPOSITORY}:<tag> or ${env:REPOSITORY}@sha256:<digest> (got '$env:REF')"
+          }
+          $reference = if ($matches.digest) { $matches.digest } else { $matches.tag }
+          $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$(($name -split '/')[0]):$env:TOKEN"))
+          $bearer = (Invoke-RestMethod "https://ghcr.io/token?scope=repository:${name}:pull" -Headers @{ Authorization = "Basic $basic" }).token
+          $accept = 'application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          $r = Invoke-WebRequest "https://ghcr.io/v2/$name/manifests/$reference" -Method Head -SkipHttpErrorCheck -Headers @{ Authorization = "Bearer $bearer"; Accept = $accept }
+          if ([int]$r.StatusCode -ne 200) { throw "$env:REF not found in the registry ($($r.StatusCode))" }
+          $image = "$env:REPOSITORY@$($r.Headers['Docker-Content-Digest'])"
+          Write-Host "base image $env:REF -> $image"
+          "image=$image" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Output
+        id: out
+        shell: pwsh
+        env:
+          BUILT: ${{ steps.build.outputs.digest }}
+          EXISTING: ${{ steps.existing.outputs.image }}
+        run: |
+          $image = if ($env:EXISTING) { $env:EXISTING } else { $env:BUILT }
+          if ($image -notmatch '@sha256:[0-9a-f]{64}$') { throw "no base image digest (build: '$env:BUILT')" }
+          "image=$image" | Add-Content $env:GITHUB_OUTPUT
+
+  seed:
+    needs: [matrix, base]
+    if: needs.matrix.outputs.configs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.matrix.outputs.configs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Seed ${{ matrix.config }}
+        id: build
+        uses: ./.github/actions/sls-build-image
+        with:
+          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
+          base-image: ${{ needs.base.outputs.image }}
+          config: ${{ matrix.config }}
+          repository: ${{ env.REPOSITORY }}
+          sls-version: ${{ env.SLS_VERSION }}
+          tags: r${{ github.run_number }}
+          reject-cpus: ${{ inputs.reject-cpus }}
+          push: 'true'
+          allow-new-package: 'false'
+          log-artifact: seed-${{ matrix.config }}-logs
+
+      - name: Record
+        shell: pwsh
+        env:
+          CONFIG: ${{ matrix.config }}
+          OUT: ${{ toJSON(steps.build.outputs) }}
+        run: |
+          $o = $env:OUT | ConvertFrom-Json
+          if ($o.digest -notmatch '@sha256:[0-9a-f]{64}$') { throw "no digest for $env:CONFIG" }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/image" | Out-Null
+          [ordered]@{ config = $env:CONFIG; image = $o.digest; tag = $o.image; minutes = $o.minutes; attempts = $o.'config-attempts'; host_cpu = $o.'host-cpu' } |
+            ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/image/image-$env:CONFIG.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.config }}
+          path: ${{ runner.temp }}/image/image-${{ matrix.config }}.json
+          retention-days: 7
+
+  promote:
+    needs: [matrix, base, seed]
+    # Runs when the base and every seeded image are pushed (seed is skipped when configs is empty).
+    if: >-
+      !cancelled() && needs.base.result == 'success' &&
+      (needs.seed.result == 'success' || (needs.seed.result == 'skipped' && needs.matrix.outputs.configs == '[]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        if: needs.matrix.outputs.configs != '[]'
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/image
+
+      - name: Publish
+        id: publish
+        shell: pwsh
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          BASE: ${{ needs.base.outputs.image }}
+          CONFIGS: ${{ join(fromJSON(needs.matrix.outputs.configs), ',') }}
+          PROMOTE: ${{ inputs.promote }}
+        run: |
+          $p = @{
+            Repository = $env:REPOSITORY; SlsVersion = $env:SLS_VERSION; BaseImage = $env:BASE
+            SeedDir = "$env:RUNNER_TEMP/image"; Configs = $env:CONFIGS; Promote = ($env:PROMOTE -eq 'true')
+            Out = "$env:RUNNER_TEMP/images.json"
+          }
+          scripts/ci/Publish-SlsImages.ps1 @p
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: ${{ steps.publish.outputs.images }}
+          retention-days: 90

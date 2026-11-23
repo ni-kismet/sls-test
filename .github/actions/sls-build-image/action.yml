@@ -44,6 +44,11 @@ inputs:
   push:
     description: Push the images built here to ghcr.io ('true'/'false').
     default: 'false'
+  floating-tag:
+    description: >-
+      Also push the base image's moving <repository>:<sls-version> tag ('true'/'false'). build-images sets 'false' and
+      moves it only after every image of the run is built.
+    default: 'true'
   registry-token:
     description: Token for ghcr.io (packages:write to push; packages:read to pull base-image).
     default: ${{ github.token }}
@@ -177,11 +182,14 @@ runs:
         BASE_TAGS: ${{ steps.build.outputs.base_tags }}
         CONFIG_IMAGE: ${{ steps.build.outputs.config_image }}
         CONFIG_TAGS: ${{ steps.build.outputs.tags }}
+        FLOATING_TAG: ${{ inputs.floating-tag }}
+        FLOATING_REF: ${{ inputs.repository }}:${{ inputs.sls-version }}
       run: |
         $push = Join-Path $env:SLS_TEST_ROOT 'scripts/Push-SlsImage.ps1'
         $final = $env:GITHUB_OUTPUT
+        $baseTags = @($env:BASE_TAGS -split ',' | Where-Object { $_ -and ($env:FLOATING_TAG -eq 'true' -or $_ -ne $env:FLOATING_REF) })
         $sets = @()
-        if (-not $env:BASE_IMAGE_IN) { $sets += , @($env:BASE_IMAGE, $env:BASE_TAGS) }
+        if (-not $env:BASE_IMAGE_IN) { $sets += , @($env:BASE_IMAGE, ($baseTags -join ',')) }
         if ($env:CONFIG_IMAGE) { $sets += , @($env:CONFIG_IMAGE, $env:CONFIG_TAGS) }
         $lines = @()
         foreach ($s in $sets) {

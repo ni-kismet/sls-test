@@ -8,7 +8,8 @@ seeded configuration image with retries, one set of step outputs and a job summa
 Base image: scripts/Invoke-SlsBuild.ps1 (Build-SlsImage.ps1 with attempts; -OnBugcheck restart|resume), unless
 -BaseImage names an existing image (pulled when not present locally).
 Configuration image (-Config): sls/build/New-SlsConfigImage.ps1 with the seed sls/configs/<Config>/Seed.ps1 (or
--ConfigSeed), tag <base repository>:<base tag>-<Config>, every -ExtraTag also as <tag>-<Config>. Every attempt starts
+-ConfigSeed), tag <base repository>:<base tag>-<Config> (for a digest base: <x.y.z>-<yyyyMMdd>-<Config> from the base's
+version and created labels, the base's own immutable tag), every -ExtraTag also as <tag>-<Config>. Every attempt starts
 fresh (a failed attempt's out folder is kept as sls/out/configs/<Config>-fail<n> for the logs).
 
 The admin password of the base image comes from SLS_BUILD_ADMIN_PASSWORD (both builds read it).
@@ -132,8 +133,18 @@ if ($Config -and -not $failed) {
     $seed = if ($ConfigSeed) { $ConfigSeed } else { Join-Path $sls "configs/$Config/Seed.ps1" }
     if (-not (Test-Path $seed)) { throw "seed script $seed not found (-Config $Config)" }
     $baseTag = $result.base_image
-    $i = $baseTag.LastIndexOf(':')
-    $cfgTag = "$($baseTag.Substring(0, $i)):$($baseTag.Substring($i + 1))-$Config"
+    if ($baseTag -match '^[^@]+@sha256:') {
+        # Digest reference: rebuild the base's immutable tag (<x.y.z>-<yyyyMMdd>, stages/Image.ps1) from its labels.
+        $baseRepo = ($baseTag -split '@')[0]
+        $lbl = "$(& docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "org.opencontainers.image.created"}}' $baseTag)".Trim()
+        $ver, $created = $lbl -split '\|', 2
+        if ($ver -notmatch '^\d+\.\d+\.\d+' -or $created -notmatch '^\d{4}-\d{2}-\d{2}') { throw "base image $baseTag has no usable version/created labels ('$lbl')" }
+        $xyz = ([regex]::Match($ver, '^\d+\.\d+\.\d+')).Value
+        $cfgTag = "${baseRepo}:$xyz-$($created.Substring(0, 10) -replace '-', '')-$Config"
+    } else {
+        $i = $baseTag.LastIndexOf(':')
+        $cfgTag = "$($baseTag.Substring(0, $i)):$($baseTag.Substring($i + 1))-$Config"
+    }
     $cfgExtra = @(Split-List $ExtraTag | ForEach-Object { "$_-$Config" })
     $cfgDir = Join-Path $sls "out/configs/$Config"
     $attempts = [Collections.Generic.List[object]]::new()
