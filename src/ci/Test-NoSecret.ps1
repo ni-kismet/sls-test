@@ -7,11 +7,12 @@ Leak guard for artifacts of this public repository: fails when a secret appears 
 Searches every file below -Path, including the entries of .zip files (Playwright traces) and .tgz/.tar.gz files (guest
 log bundles), for each secret as plain
 text. Default secrets: $env:SLS_ADMIN_PASSWORD, $env:SLS_BUILD_ADMIN_PASSWORD, the passwords in
-sls/out/builds/*/credentials.json and the decoded $env:SLS_LICENSE_FILE_B64. On a hit it prints only the file name
+<SLS_OUT or src/out>/builds/*/credentials.json and the decoded $env:SLS_LICENSE_FILE_B64. Values shorter than 6
+characters (the default admin password 'test') are not checked. On a hit it prints only the file name
 (never the match), deletes -Path and exits 1, so nothing gets uploaded.
 
 .EXAMPLE
-pwsh scripts/Test-NoSecret.ps1 -Path $env:RUNNER_TEMP/upload
+pwsh src/ci/Test-NoSecret.ps1 -Path $env:RUNNER_TEMP/upload
 #>
 param(
     [Parameter(Mandatory)][string]$Path,
@@ -19,11 +20,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$root = Split-Path $PSScriptRoot -Parent
+$outRoot = if ($env:SLS_OUT) { $env:SLS_OUT } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'out' }
 
 $secrets = [Collections.Generic.List[string]]::new()
 foreach ($s in @($Secret) + @($env:SLS_ADMIN_PASSWORD, $env:SLS_BUILD_ADMIN_PASSWORD)) { if ($s) { $secrets.Add($s) } }
-foreach ($f in Get-ChildItem (Join-Path $root 'sls/out/builds/*/credentials.json') -ErrorAction SilentlyContinue) {
+foreach ($f in Get-ChildItem (Join-Path $outRoot 'builds/*/credentials.json') -ErrorAction SilentlyContinue) {
     $c = Get-Content $f -Raw | ConvertFrom-Json
     foreach ($p in 'adminPassword', 'vmPassword') { if ($c.$p) { $secrets.Add([string]$c.$p) } }
 }

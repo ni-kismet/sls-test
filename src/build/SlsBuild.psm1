@@ -1,5 +1,5 @@
 # SystemLink Server image build helpers (PowerShell 7). Imported by Build-SlsImage.ps1, the stage scripts and
-# New-SlsConfigImage.ps1. Consumer-facing helpers (start/wait/API/guest/logs) live in testkit/SlsTestKit.psm1.
+# New-SlsConfigImage.ps1. Consumer-facing helpers (start/wait/API/guest/logs) live in src/testkit/SlsTestKit.psm1.
 Set-StrictMode -Version Latest
 
 $script:RepoRoot = Split-Path $PSScriptRoot -Parent
@@ -8,6 +8,11 @@ $script:LogFile = $null
 
 function Get-SlsRepoRoot { $script:RepoRoot }
 function Get-SlsDefaultDockurImage { $script:DefaultDockurImage }
+# Build output (logs, reports, credentials.json): SLS_OUT (the actions use $RUNNER_TEMP/sls), else src/out.
+function Get-SlsOutRoot { if ($env:SLS_OUT) { $env:SLS_OUT } else { Join-Path $script:RepoRoot 'out' } }
+# Web admin password of the images: not a secret (local test servers); SLS_BUILD_ADMIN_PASSWORD overrides it.
+$script:DefaultAdminPassword = 'test'
+function Get-SlsAdminPassword { if ($env:SLS_BUILD_ADMIN_PASSWORD) { $env:SLS_BUILD_ADMIN_PASSWORD } else { $script:DefaultAdminPassword } }
 
 function Set-SlsLogFile([string]$Path) {
     $script:LogFile = $Path
@@ -138,8 +143,9 @@ function New-SlsCredential([string]$User, [string]$Password) {
 function Register-SlsSecret([string[]]$Value) {
     # GitHub Actions: masks the values in all later log output. Written straight to stdout, never through Write-SlsLog
     # (build.log is a CI artifact).
+    # The default password is not a secret (masking it would hide every "test" in the logs).
     if ($env:GITHUB_ACTIONS -ne 'true') { return }
-    foreach ($v in $Value) { if ($v) { [Console]::Out.WriteLine("::add-mask::$v") } }
+    foreach ($v in $Value) { if ($v -and $v -ne $script:DefaultAdminPassword) { [Console]::Out.WriteLine("::add-mask::$v") } }
 }
 
 function Write-SlsCiOutput([Collections.IDictionary]$Values) {
@@ -156,15 +162,30 @@ function Resolve-SlsTag([string]$Repository, [string]$Tag) {
 
 function Get-SlsImageCredential {
     # Admin credential of an image: SLS_BUILD_ADMIN_PASSWORD, else the build's git-ignored credentials.json found
-    # through the image's com.ni.sls.build-id label.
+    # through the image's com.ni.sls.build-id label, else the default password.
     param([Parameter(Mandatory)][string]$Image)
     if ($env:SLS_BUILD_ADMIN_PASSWORD) { Register-SlsSecret $env:SLS_BUILD_ADMIN_PASSWORD; return New-SlsCredential 'admin' $env:SLS_BUILD_ADMIN_PASSWORD }
     $id = "$(& docker image inspect -f '{{ index .Config.Labels "com.ni.sls.build-id" }}' $Image 2>$null)".Trim()
-    $f = Join-Path $script:RepoRoot "out\builds\$id\credentials.json"
-    if (-not $id -or -not (Test-Path $f)) { throw "no credentials for $Image (build '$id'): set SLS_BUILD_ADMIN_PASSWORD" }
+    $f = Join-Path (Get-SlsOutRoot) "builds\$id\credentials.json"
+    if (-not $id -or -not (Test-Path $f)) { return New-SlsCredential 'admin' $script:DefaultAdminPassword }
     $c = Get-Content $f -Raw | ConvertFrom-Json
     Register-SlsSecret $c.adminPassword, $c.vmPassword
     return New-SlsCredential $c.adminUser $c.adminPassword
+}
+
+function Test-SlsSeedScript {
+    # Seed preflight (before any image work): the file exists, parses, and takes the contract's parameters
+    # (-BaseUrl, -Credential, -Container, -Verify). Returns the full path.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "seed script $Path not found" }
+    $full = (Resolve-Path -LiteralPath $Path).Path
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($full, [ref]$tokens, [ref]$errors)
+    if ($errors) { throw "seed script $Path does not parse: $(($errors | Select-Object -First 3 | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }) -join '; ')" }
+    $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    $missing = @('BaseUrl', 'Credential', 'Container', 'Verify' | Where-Object { $_ -notin $params })
+    if ($missing) { throw "seed script $Path lacks the parameter(s) $($missing -join ', ') (contract: param(`$BaseUrl, `$Credential, `$Container, [switch]`$Verify))" }
+    return $full
 }
 
 function Test-SlsTagRoundTrip {
@@ -194,6 +215,11 @@ function Get-SlsGitInfo {
     $src = "$(& git -C $script:RepoRoot remote get-url origin 2>$null)".Trim() -replace '^(https?://)[^@/]+@', '$1'
     $src = $src -replace '^git@github\.com:', 'https://github.com/' -replace '^ssh://git@github\.com/', 'https://github.com/'
     if ($src -match '^https://github\.com/') { $src = $src -replace '\.git$', '' }
+    # Used from another repository the action has no .git: name the action's repository and ref instead.
+    if (-not $rev -and $env:SLS_ACTION_REPOSITORY) {
+        $rev = "$env:SLS_ACTION_REPOSITORY@$env:SLS_ACTION_REF"
+        if (-not $src) { $src = "https://github.com/$env:SLS_ACTION_REPOSITORY" }
+    }
     return [pscustomobject]@{ Revision = $(if ($rev) { $rev + $(if ($dirty) { '-dirty' } else { '' }) } else { 'unknown' }); Source = $(if ($src) { $src } else { 'unknown' }) }
 }
 

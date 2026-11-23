@@ -1,9 +1,10 @@
 # SystemLink Server for local development / CI with docker compose.
-#   $env:SLS_ADMIN_PASSWORD = '<password>'     # optional: set the web admin password at start
-#   docker compose -f testkit/compose.yaml up -d --wait
-#   docker compose -f testkit/compose.yaml port sls 80
-#   docker compose -f testkit/compose.yaml logs -f sls
-#   docker compose -f testkit/compose.yaml down -t 150   # add -v to drop the persistent disk
+# Web admin: admin / test (the images' default).
+#   $env:SLS_ADMIN_PASSWORD = '<password>'     # optional: another web admin password, set at start
+#   docker compose -f src/testkit/compose.yaml up -d --wait
+#   docker compose -f src/testkit/compose.yaml port sls 80
+#   docker compose -f src/testkit/compose.yaml logs -f sls
+#   docker compose -f src/testkit/compose.yaml down -t 150   # add -v to drop the persistent disk
 # Secrets are passed through from the environment (value-less entries), never written here.
 name: sls
 services:

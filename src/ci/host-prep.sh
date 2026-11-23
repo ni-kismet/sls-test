@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Prepares a GitHub-hosted Ubuntu runner for SystemLink Server image work (body of the sls-host-prep action, also run
-# by sls-build-image and sls-start-server): KVM/TUN usable from a container, enough free space in the Docker data
+# Prepares a GitHub-hosted Ubuntu runner for SystemLink Server image work (run by sls-build-image and
+# sls-start-server): KVM/TUN usable from a container, enough free space in the Docker data
 # root, optional ghcr.io login and license file.
 #
 # Environment:

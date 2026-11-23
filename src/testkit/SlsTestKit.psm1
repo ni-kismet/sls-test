@@ -1,8 +1,8 @@
 # SystemLink Server container test kit (PowerShell 7). Starts SystemLink Server containers for integration tests,
 # waits until they are usable, calls the REST API, runs scripts in the Windows guest and collects logs.
 #
-#   Import-Module ./testkit/SlsTestKit.psm1
-#   $s = Start-SlsServer -Image sls-server:26.5-demo -AdminCredential $cred     # returns once healthy
+#   Import-Module ./src/testkit/SlsTestKit.psm1
+#   $s = Start-SlsServer -Image sls-server:26.5-demo                            # returns once healthy
 #   Invoke-SlsApi $s 'nitag/v2/tags?take=10'
 #   Wait-SlsCondition { (Invoke-SlsApi $s 'nitag/v2/tags/demo.line1.sensor001/values/current').value.value -eq '1.25' }
 #   Invoke-SlsGuest $s 'Get-Service NI* | Format-Table -AutoSize'
@@ -10,10 +10,12 @@
 #   Stop-SlsServer $s
 #
 # Secrets (admin password, health credentials) reach docker through the inherited environment, never on the command
-# line. Containers publish port 80 on 127.0.0.1 only, on a free port chosen by docker.
+# line. Containers publish port 80 on 127.0.0.1 only, on a free port chosen by docker. Without -Credential or
+# -AdminCredential the API helpers sign in as admin / test (the images' default web admin password).
 Set-StrictMode -Version Latest
 
 $script:DefaultImage = 'sls-server:26.5'
+$script:DefaultCredential = [pscredential]::new('admin', (ConvertTo-SecureString 'test' -AsPlainText -Force))
 
 function Invoke-SlsDockerCli {
     # Not an advanced function: docker flags such as -v/-p must not bind to PowerShell common parameters.
@@ -45,6 +47,7 @@ function Get-SlsServer {
     #>
     param([Parameter(Mandatory)][string]$Name, [pscredential]$Credential)
     $image = "$(Invoke-SlsDockerCli inspect -f '{{.Config.Image}}' $Name)".Trim()
+    if (-not $Credential) { $Credential = $script:DefaultCredential }
     return New-SlsServerObject -Name $Name -Image $image -Credential $Credential -LicenseDir $null
 }
 
@@ -84,7 +87,8 @@ function Start-SlsServer {
         [switch]$NoWait
     )
     if ($AdminCredential -and $AdminCredential.UserName -ne 'admin') { throw "AdminCredential: the user name must be 'admin' (got '$($AdminCredential.UserName)')" }
-    $cred = if ($AdminCredential) { $AdminCredential } else { $Credential }
+    # Without credentials the healthcheck stays anonymous; the API helpers use the default admin / test.
+    $cred = if ($AdminCredential) { $AdminCredential } elseif ($Credential) { $Credential } else { $script:DefaultCredential }
     $a = @('run', '-d', '--name', $Name, '--device', '/dev/kvm', '--device', '/dev/net/tun', '--cap-add', 'NET_ADMIN',
         '--stop-timeout', '150', '-e', "RAM_SIZE=$Ram", '-e', "CPU_CORES=$Cpu",
         '-p', $(if ($HttpPort) { "127.0.0.1:${HttpPort}:80" } else { '127.0.0.1::80' }))

@@ -1,12 +1,12 @@
 # Demo configuration seed (the Spike 1 demo data): 100 DOUBLE tags demo.line<1..10>.sensor<001..100> with value
 # <i>.25 and one text file in the file service.
-#   pwsh build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name demo -Seed configs/demo/Seed.ps1
+#   pwsh src/build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name demo -Seed src/seeds/demo/Seed.ps1
 # Contract: without -Verify create the data; with -Verify throw when it is missing.
 param([Parameter(Mandatory)][string]$BaseUrl, [Parameter(Mandatory)][pscredential]$Credential, [Parameter(Mandatory)][string]$Container,
     [switch]$Verify)
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-SlsServer -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $PSScriptRoot '..\..\testkit\SlsTestKit.psm1')
+    Import-Module $(if ($env:SLS_TESTKIT) { $env:SLS_TESTKIT } else { Join-Path $PSScriptRoot '..\..\testkit\SlsTestKit.psm1' })
 }
 $server = Get-SlsServer -Name $Container -Credential $Credential
 $count = 100

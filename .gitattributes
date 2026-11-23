@@ -3,6 +3,6 @@
 *.yml text eol=lf
 Dockerfile text eol=lf
 *.Dockerfile text eol=lf
-sls/image/bin/* text eol=lf
+src/image/bin/* text eol=lf
 *.png binary
 *.bat text eol=crlf

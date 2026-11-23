@@ -1,21 +1,21 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-Runs sls/build/Build-SlsImage.ps1 and retries a failed build (for example a Windows bugcheck in the build VM on a
+Runs src/build/Build-SlsImage.ps1 and retries a failed build (for example a Windows bugcheck in the build VM on a
 nested-KVM runner).
 
 .DESCRIPTION
 After a failure the failed stage and message are read from the build's build.log. A failed Install starts over with
 a new build id (<BuildId>-a<n>, after cleaning up the failed one); a later stage stops the build container and resumes
 the same build with -From <stage>. A Windows bugcheck in a later stage also starts over unless -OnBugcheck resume (the
-crashed guest's disk may be inconsistent). Every attempt is recorded in sls/out/builds/attempts-<BuildId>.json. GitHub
+crashed guest's disk may be inconsistent). Every attempt is recorded in <out>/builds/attempts-<BuildId>.json. GitHub
 step outputs (in addition to those of Build-SlsImage.ps1): attempts, bugchecks, final_build_id.
 
 Arguments other than -BuildId and -MaxAttempts are passed to Build-SlsImage.ps1 on the first attempt (a resume
 takes them from the build's context.json).
 
 .EXAMPLE
-pwsh scripts/Invoke-SlsBuild.ps1 -BuildId gh-123 -MaxAttempts 3 -Repository ghcr.io/rajsite/sls-server-soak -Ram 10G -Cpu 4
+pwsh src/ci/Invoke-SlsBuild.ps1 -BuildId gh-123 -MaxAttempts 3 -Repository ghcr.io/rajsite/sls-server -Ram 10G -Cpu 4
 #>
 param(
     [Parameter(Mandatory)][string]$BuildId,
@@ -24,9 +24,9 @@ param(
     [Parameter(ValueFromRemainingArguments)][object[]]$BuildArgs = @()
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path $PSScriptRoot -Parent
-$build = Join-Path $root 'sls/build/Build-SlsImage.ps1'
-$builds = Join-Path $root 'sls/out/builds'
+$src = Split-Path $PSScriptRoot -Parent
+$build = Join-Path $src 'build/Build-SlsImage.ps1'
+$builds = Join-Path $(if ($env:SLS_OUT) { $env:SLS_OUT } else { Join-Path $src 'out' }) 'builds'
 $record = Join-Path $builds "attempts-$BuildId.json"
 New-Item -ItemType Directory -Force -Path $builds | Out-Null
 

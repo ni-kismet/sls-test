@@ -1,19 +1,16 @@
 name: sls-start-server
 description: >
-  Start a SystemLink Server container on a GitHub-hosted Ubuntu runner and wait until it is usable: pull, start,
-  wait for the healthcheck and (default) every migration-coverage API, start once more after a guest crash. Exports
-  SLS_BASE_URL and SLS_CONTAINER to later steps. On failure collect logs with sls-collect-logs (container: <name>).
+  Start a SystemLink Server container on a GitHub-hosted Ubuntu runner and wait until it is usable: pull (when not
+  local), start, wait for the healthcheck and (default) every migration-coverage API, start once more after a guest
+  crash. Exports SLS_BASE_URL and SLS_CONTAINER to later steps. On failure collect logs with sls-collect-logs.
 
 inputs:
   image:
     description: Image to start (for example ghcr.io/<owner>/sls-server:26.5-migration).
     required: true
   admin-password:
-    description: Web admin password, set at start (any value works; pass a secret).
-    required: true
-  pull:
-    description: Pull the image first ('false' = the image must be local, for example built in this job).
-    default: 'true'
+    description: Web admin password (user admin); set at start unless the image already has it.
+    default: test
   registry-token:
     description: Token for pulling from ghcr.io (packages:read).
     default: ${{ github.token }}
@@ -89,7 +86,7 @@ runs:
     - name: Host facts
       id: facts
       shell: bash
-      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-facts.sh"
+      run: bash "$GITHUB_ACTION_PATH/../src/ci/host-facts.sh"
 
     - name: Host prep
       if: inputs.host-prep == 'true'
@@ -97,20 +94,18 @@ runs:
       shell: bash
       env:
         MIN_FREE_GB: ${{ inputs.min-free-gb }}
-        REGISTRY_LOGIN: ${{ (inputs.pull == 'true' && startsWith(inputs.image, 'ghcr.io/') && inputs.registry-token != '') && 'true' || 'false' }}
+        REGISTRY_LOGIN: ${{ (startsWith(inputs.image, 'ghcr.io/') && inputs.registry-token != '') && 'true' || 'false' }}
         REGISTRY_TOKEN: ${{ inputs.registry-token }}
         REGISTRY_USER: ${{ github.actor }}
         LICENSE_B64: ${{ inputs.license-b64 }}
-      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-prep.sh"
+      run: bash "$GITHUB_ACTION_PATH/../src/ci/host-prep.sh"
 
     - name: Start SystemLink Server
       id: start
       shell: pwsh
       env:
-        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
         SLS_ADMIN_PASSWORD: ${{ inputs.admin-password }}
         IN_IMAGE: ${{ inputs.image }}
-        IN_PULL: ${{ inputs.pull }}
         IN_NAME: ${{ inputs.name }}
         IN_PORT: ${{ inputs.port }}
         IN_RAM: ${{ inputs.ram }}
@@ -123,12 +118,12 @@ runs:
         IN_LICENSE_USER: ${{ inputs.license-user }}
         IN_LICENSE_DIR: ${{ steps.prep.outputs.license-dir }}
       run: |
-        Write-Host "::add-mask::$env:SLS_ADMIN_PASSWORD"
+        if ($env:SLS_ADMIN_PASSWORD -ne 'test') { Write-Host "::add-mask::$env:SLS_ADMIN_PASSWORD" }
         $p = @{
-          Image = $env:IN_IMAGE; Name = $env:IN_NAME; Pull = $env:IN_PULL -eq 'true'; Replace = $env:IN_REPLACE -eq 'true'
+          Image = $env:IN_IMAGE; Name = $env:IN_NAME; Replace = $env:IN_REPLACE -eq 'true'
           Ram = $env:IN_RAM; Cpu = [int]$env:IN_CPU; HttpPort = [int]$env:IN_PORT; WaitFor = $env:IN_WAIT_FOR
           TimeoutSec = [int]$env:IN_HEALTHY_MIN * 60; ServicesTimeoutSec = [int]$env:IN_SERVICES_MIN * 60
           CrashRetries = [int]$env:IN_CRASH_RETRIES; LicenseUser = $env:IN_LICENSE_USER
         }
         if ($env:IN_LICENSE_DIR) { $p.LicenseFile = Join-Path $env:IN_LICENSE_DIR 'sls.lic' }
-        & (Join-Path $env:SLS_TEST_ROOT 'scripts/ci/Start-SlsCi.ps1') @p
+        & "$env:GITHUB_ACTION_PATH/../src/ci/Start-SlsCi.ps1" @p

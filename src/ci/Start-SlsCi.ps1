@@ -4,9 +4,10 @@
 Starts a SystemLink Server container for CI (body of the sls-start-server action) and waits until it is usable.
 
 .DESCRIPTION
-Pulls -Image (with retries; -Pull:$false requires a local image), removes an existing container of the same name when
--Replace (fails otherwise), starts it with the testkit's Start-SlsServer (the web admin password is set at start from
-SLS_ADMIN_PASSWORD) and waits:
+Pulls -Image when it is not present locally (with retries), removes an existing container of the same name when
+-Replace (fails otherwise), starts it with the testkit's Start-SlsServer and waits. The web admin password is
+SLS_ADMIN_PASSWORD, else 'test'; it is set at start (about 40 s) unless the image's com.ni.sls.admin-password label says
+it already has it. Waits for:
   healthy   container healthcheck (guest agent ready, runtime settings applied, API answering)
   services  healthy plus one read-only call per migration resource answering (Test-SlsServiceCoverage, waits up to
             -ServicesTimeoutSec for services still starting)
@@ -18,12 +19,11 @@ GitHub step outputs: base-url, container, http-port, pull-sec, healthy-sec, read
 last bugcheck's stop code), log-dir. Exported to later steps (GITHUB_ENV): SLS_BASE_URL, SLS_CONTAINER, SLS_HTTP_PORT.
 
 .EXAMPLE
-$env:SLS_ADMIN_PASSWORD = '...'; pwsh scripts/ci/Start-SlsCi.ps1 -Image ghcr.io/rajsite/sls-server:26.5-migration -Name sls
+pwsh src/ci/Start-SlsCi.ps1 -Image ghcr.io/rajsite/sls-server:26.5-migration -Name sls
 #>
 param(
     [Parameter(Mandatory)][string]$Image,
     [string]$Name = 'sls',
-    [bool]$Pull = $true,
     [bool]$Replace = $false,
     [string]$Ram = '8G',
     [int]$Cpu = 4,
@@ -39,8 +39,7 @@ param(
     [string]$LogDir = $(Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }) 'sls-start-logs')
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-Import-Module (Join-Path $root 'sls/testkit/SlsTestKit.psm1') -Force
+Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'testkit/SlsTestKit.psm1') -Force
 
 function Write-CiOutput([Collections.IDictionary]$Values) {
     if (-not $env:GITHUB_OUTPUT) { return }
@@ -50,22 +49,25 @@ function Add-Summary([string[]]$Lines) {
     if ($env:GITHUB_STEP_SUMMARY) { $Lines -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8 } else { $Lines | Write-Host }
 }
 
-if (-not $env:SLS_ADMIN_PASSWORD) { throw 'SLS_ADMIN_PASSWORD is not set (the web admin password set at start)' }
-$cred = [pscredential]::new('admin', (ConvertTo-SecureString $env:SLS_ADMIN_PASSWORD -AsPlainText -Force))
+$password = if ($env:SLS_ADMIN_PASSWORD) { $env:SLS_ADMIN_PASSWORD } else { 'test' }
+$cred = [pscredential]::new('admin', (ConvertTo-SecureString $password -AsPlainText -Force))
 $licenses = @($LicenseFile -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 & docker image inspect $Image *> $null
-$local = $LASTEXITCODE -eq 0
-if ($Pull) {
+if ($LASTEXITCODE -ne 0) {
     for ($i = 1; ; $i++) {
         & docker pull $Image
         if ($LASTEXITCODE -eq 0) { break }
-        if ($i -ge 3) { if ($local) { Write-Host "::warning::pull of $Image failed; using the local image"; break } throw "docker pull $Image failed 3 times" }
+        if ($i -ge 3) { throw "docker pull $Image failed 3 times" }
         Start-Sleep -Seconds (30 * $i)
     }
-} elseif (-not $local) { throw "image $Image is not present locally (pull: false)" }
+} else { Write-Host "using local image $Image" }
 $pullSec = [math]::Round($sw.Elapsed.TotalSeconds)
+# Only the non-secret default is ever in the label; anything else is 'custom' (or missing on older images).
+$imagePassword = "$(& docker image inspect -f '{{index .Config.Labels "com.ni.sls.admin-password"}}' $Image 2>$null)".Trim()
+$credArgs = if ($imagePassword -and $imagePassword -ceq $password) { @{ Credential = $cred } } else { @{ AdminCredential = $cred } }
+Write-Host "web admin password: $(if ($credArgs.Credential) { 'already set in the image' } else { 'set at start' })"
 
 if ("$(& docker inspect -f '{{.Name}}' $Name 2>$null)".Trim()) {
     if (-not $Replace) { throw "a container named $Name exists; pass replace: true to remove it" }
@@ -78,7 +80,7 @@ for ($n = 1; $n -le $CrashRetries + 1; $n++) {
     $attempts = $n
     $sw.Restart()
     try {
-        $server = Start-SlsServer -Image $Image -Name $Name -AdminCredential $cred -Ram $Ram -Cpu $Cpu -HttpPort $HttpPort `
+        $server = Start-SlsServer -Image $Image -Name $Name @credArgs -Ram $Ram -Cpu $Cpu -HttpPort $HttpPort `
             -Volume $Volume -LicenseUser $LicenseUser -LicenseFile $licenses -TimeoutSec $TimeoutSec -NoWait:($WaitFor -eq 'none')
         $healthySec = if ($WaitFor -eq 'none') { $null } else { [math]::Round($sw.Elapsed.TotalSeconds, 1) }
         break

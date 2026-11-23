@@ -14,14 +14,14 @@ Three containers:
 The image's own admin password comes from SLS_BUILD_ADMIN_PASSWORD or the build's credentials.json.
 
 .EXAMPLE
-pwsh build/Test-SlsRuntime.ps1 -Image sls-server:26.5
+pwsh src/build/Test-SlsRuntime.ps1 -Image sls-server:26.5
 #>
 param([string]$Image = 'sls-server:26.5', [string]$Ram = '8G', [int]$Cpu = 4)
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'SlsBuild.psm1') -Force
 Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'testkit\SlsTestKit.psm1') -Force
 $imageCred = Get-SlsImageCredential -Image $Image
-$outDir = Join-Path (Get-SlsRepoRoot) "out\runtime-tests\$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
+$outDir = Join-Path (Get-SlsOutRoot) "runtime-tests\$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Set-SlsLogFile (Join-Path $outDir 'test.log')
 $results = [Collections.Generic.List[object]]::new()

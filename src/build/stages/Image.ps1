@@ -30,10 +30,12 @@ Write-SlsLog "disk layer image $($Ctx.DiskImage) in $diskSec s"
 $full = "$($v.systemlinkServer)"
 if ($full -notmatch '^(\d+\.\d+\.\d+)') { throw "unexpected SystemLink Server version '$full'" }
 $xyz = $matches[1]
-$date = (Get-Date).ToUniversalTime().ToString('yyyyMMdd')
+# Unique per build (UTC minute): a same-day rebuild doesn't move an earlier build's dated tag.
+$date = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmm')
 $tags = @("$($Ctx.Repository):$xyz-$date", "$($Ctx.Repository):$($Ctx.SlsVersion)")
 if ($Ctx.PSObject.Properties['ExtraTags']) { $tags += @($Ctx.ExtraTags | Where-Object { $_ -notin $tags }) }
 $git = Get-SlsGitInfo
+$adminPassword = (Get-Content (Join-Path $Ctx.OutDir 'credentials.json') -Raw | ConvertFrom-Json).adminPassword
 # pwsh turns ISO date strings from JSON into DateTime; keep the label ISO 8601 (UTC).
 $expires = $v.eval.expiresUtc
 if ($expires -is [datetime]) { $expires = $expires.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
@@ -43,6 +45,8 @@ $buildArgs = [ordered]@{
     WINDOWS_VERSION = "$($Ctx.WindowsVersion) ($($v.windows.build))"; WINDOWS_EVAL_EXPIRES = "$expires"
     DOCKUR_IMAGE = $Ctx.DockurImage; BUILD_ID = $Ctx.BuildId; CREATED = (Get-Date).ToUniversalTime().ToString('o')
     REVISION = $git.Revision; SOURCE = $git.Source
+    # The default password is not a secret: sls-start-server skips the password change at start when it matches.
+    ADMIN_PASSWORD_LABEL = $(if ($adminPassword -eq 'test') { 'test' } else { 'custom' })
 }
 $a = @('build')
 foreach ($k in $buildArgs.Keys) { $a += @('--build-arg', "$k=$($buildArgs[$k])") }
@@ -61,7 +65,7 @@ foreach ($h in (Invoke-SlsDocker history --format '{{.Size}}|{{.CreatedBy}}' $ta
 $Ctx.Results | Add-Member -NotePropertyName Image -NotePropertyValue $tags[0] -Force
 $Ctx.Results | Add-Member -NotePropertyName ImageId -NotePropertyValue $imageId -Force
 $Ctx.Results | Add-Member -NotePropertyName Tags -NotePropertyValue $tags -Force
-# For a later registry push (see implementation-plan.md, follow-on F2): immutable full tag + moving tags.
+# For a registry push: immutable dated tag + floating tags.
 $Ctx.Results | Add-Member -NotePropertyName PublishTags -NotePropertyValue @("$xyz-$date", $xyz, $Ctx.SlsVersion) -Force
 $Ctx.Results | Add-Member -NotePropertyName Git -NotePropertyValue $git -Force
 $Ctx.Results.Sizes | Add-Member -NotePropertyName imageBytes -NotePropertyValue $size -Force

@@ -1,12 +1,12 @@
 # Migration configuration seed: the data described in manifest.json (sls-test docs/workflow-test-plan.md W5.3).
-#   pwsh build/New-SlsConfigImage.ps1 -BaseImage sls-server-mod:26.5 -Name migration -Seed configs/migration/Seed.ps1
+#   pwsh src/build/New-SlsConfigImage.ps1 -BaseImage sls-server-mod:26.5 -Name migration -Seed src/seeds/migration/Seed.ps1
 # Contract: without -Verify create the data (on a server that has none of it); with -Verify throw when any of it is
 # missing or a relationship is wrong (result -> product/files/steps, state -> feed/package, asset -> calibrations).
 param([Parameter(Mandatory)][string]$BaseUrl, [Parameter(Mandatory)][pscredential]$Credential, [Parameter(Mandatory)][string]$Container,
     [switch]$Verify, [string]$Manifest = (Join-Path $PSScriptRoot 'manifest.json'))
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-SlsServer -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $PSScriptRoot '..\..\testkit\SlsTestKit.psm1')
+    Import-Module $(if ($env:SLS_TESTKIT) { $env:SLS_TESTKIT } else { Join-Path $PSScriptRoot '..\..\testkit\SlsTestKit.psm1' })
 }
 $server = Get-SlsServer -Name $Container -Credential $Credential
 $m = Get-Content $Manifest -Raw | ConvertFrom-Json -AsHashtable

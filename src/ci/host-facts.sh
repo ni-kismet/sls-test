@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host facts of a GitHub-hosted runner for SystemLink Server image work: CPU model, hypervisor and the kvm_amd /
-# kvm_intel module parameters (nested-KVM stability depends on them, docs/workflow-test-plan.md §8).
+# kvm_intel module parameters (nested-KVM stability depends on them, docs/history/workflow-test-plan.md §8).
 #
 # Environment:
 #   FACTS_DIR    optional; writes $FACTS_DIR/runner.json

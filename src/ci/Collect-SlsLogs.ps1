@@ -9,11 +9,11 @@ Used by the sls-collect-logs, sls-build-image and sls-start-server actions (comp
 actions, so they share this script). Each -Path (file or folder; missing ones are skipped) is copied below -Out under
 its leaf name (with pwsh -File, pass several paths as one newline-separated argument). With -Container, docker logs
 and the guest's sls-logs bundle are added under -Out/<container>.
-Then scripts/Test-NoSecret.ps1 checks -Out: on a hit it deletes -Out and this script exits 1, so the caller's upload
+Then Test-NoSecret.ps1 checks -Out: on a hit it deletes -Out and this script exits 1, so the caller's upload
 step (if: success) uploads nothing. Secrets checked: those of Test-NoSecret.ps1 plus -Secret.
 
 .EXAMPLE
-pwsh scripts/ci/Collect-SlsLogs.ps1 -Out $env:RUNNER_TEMP/logs -Path sls/out/builds/gh-1 -Container sls
+pwsh src/ci/Collect-SlsLogs.ps1 -Out $env:RUNNER_TEMP/logs -Path $env:RUNNER_TEMP/sls/builds -Container sls
 #>
 param(
     [Parameter(Mandatory)][string]$Out,
@@ -22,7 +22,7 @@ param(
     [string[]]$Secret = @()
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$src = Split-Path $PSScriptRoot -Parent
 $exclude = @('credentials.json', 'ca-certificates.crt', '*.qcow2', '*.img', '*.iso', '*.lic')
 $excludeDir = @('oem', '.auth', 'sls-licenses', 'licenses')
 
@@ -52,7 +52,7 @@ if ($Container) {
         $dir = Join-Path $Out $Container
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         & docker inspect -f '{{json .State}}' $Container 2>$null | Set-Content (Join-Path $dir 'state.json')
-        Import-Module (Join-Path $root 'sls/testkit/SlsTestKit.psm1') -Force
+        Import-Module (Join-Path $src 'testkit/SlsTestKit.psm1') -Force
         # docker log always; the guest log bundle only while the container runs.
         try { Save-SlsLogs $Container -Path $dir -TimeoutSec 300 | Out-Null }
         catch { Write-Host "::warning::log collection from $Container failed: $($_.Exception.Message)" }
@@ -60,5 +60,5 @@ if ($Container) {
 }
 
 $global:LASTEXITCODE = 0
-& (Join-Path $root 'scripts/Test-NoSecret.ps1') -Path $Out -Secret $Secret
+& (Join-Path $PSScriptRoot 'Test-NoSecret.ps1') -Path $Out -Secret $Secret
 exit $global:LASTEXITCODE

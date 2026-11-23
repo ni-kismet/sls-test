@@ -12,14 +12,16 @@ clean shutdown verified, logs cleared, power off) -> qemu-img convert -B /images
 out\configs\<name>\<name>.qcow2 -> docker build image\config.Dockerfile -> verify (ephemeral start; the seed's -Verify).
 
 Seed script contract: param([string]$BaseUrl, [pscredential]$Credential, [string]$Container, [switch]$Verify).
-Without -Verify it creates data; with -Verify it throws when the data is missing. testkit\SlsTestKit.psm1 is loaded
-(Get-SlsServer -Name $Container -Credential $Credential gives the object Invoke-SlsApi / Invoke-SlsGuest take).
+Without -Verify it creates data; with -Verify it throws when the data is missing. src\testkit\SlsTestKit.psm1 is loaded
+(Get-SlsServer -Name $Container -Credential $Credential gives the object Invoke-SlsApi / Invoke-SlsGuest take); its
+path is in SLS_TESTKIT. See docs/seeds.md.
 
-The admin credential of the base image comes from SLS_BUILD_ADMIN_PASSWORD or the base build's credentials.json.
+The work container sets the web admin password at start to SLS_BUILD_ADMIN_PASSWORD, else 'test' (user admin), so the
+configuration image has that password whatever the base image had.
 
 .EXAMPLE
-pwsh build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name demo -Seed configs/demo/Seed.ps1
-pwsh build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name mydata -FromVolume my-dev-volume
+pwsh src/build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name demo -Seed src/seeds/demo/Seed.ps1
+pwsh src/build/New-SlsConfigImage.ps1 -BaseImage sls-server:26.5 -Name mydata -FromVolume my-dev-volume
 #>
 [CmdletBinding(DefaultParameterSetName = 'Seed')]
 param(
@@ -45,9 +47,10 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'SlsBuild.psm1') -Force
 Import-Module (Join-Path (Split-Path $PSScriptRoot -Parent) 'testkit\SlsTestKit.psm1') -Force -Global
 $repo = Get-SlsRepoRoot
+$env:SLS_TESTKIT = Join-Path $repo 'testkit\SlsTestKit.psm1'
 
+if ($Seed) { $Seed = Test-SlsSeedScript $Seed }
 if (-not (Test-SlsImage $BaseImage)) { throw "base image $BaseImage not found" }
-if ($Seed) { $Seed = (Resolve-Path $Seed).Path }
 # pwsh -File passes an array as one comma-separated string.
 $ExtraTag = @($ExtraTag | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $LicenseFile = @($LicenseFile | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { (Resolve-Path $_ -ErrorAction Stop).Path })
@@ -58,16 +61,25 @@ if (-not $Tag) {
 $tagRepo = $Tag.Substring(0, $Tag.LastIndexOf(':'))
 $extraTags = @($ExtraTag | ForEach-Object { Resolve-SlsTag $tagRepo $_ } | Where-Object { $_ -ne $Tag })
 $id = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
-$outDir = Join-Path $repo "out\configs\$Name"
+$outDir = Join-Path (Get-SlsOutRoot) "configs\$Name"
 Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Set-SlsLogFile (Join-Path $outDir 'config.log')
 $work = "sls-config-$Name-$id"
 $vol = "$work-storage"
-$cred = Get-SlsImageCredential -Image $BaseImage
+$cred = New-SlsCredential 'admin' (Get-SlsAdminPassword)
+Register-SlsSecret $cred.GetNetworkCredential().Password
+function Get-SeedLabel([string]$Path) {
+    # For the image label: relative to this repository or the workflow's workspace, else the file name.
+    foreach ($b in @($repo, $env:GITHUB_WORKSPACE) | Where-Object { $_ }) {
+        $rel = [IO.Path]::GetRelativePath($b, $Path)
+        if (-not $rel.StartsWith('..') -and -not [IO.Path]::IsPathRooted($rel)) { return $rel -replace '\\', '/' }
+    }
+    return Split-Path $Path -Leaf
+}
 $total = [Diagnostics.Stopwatch]::StartNew()
 $result = [ordered]@{ name = $Name; tag = $Tag; baseImage = $BaseImage; baseImageId = "$(Invoke-SlsDocker image inspect -f '{{.Id}}' $BaseImage)".Trim()
-    source = $(if ($Seed) { "seed:$([IO.Path]::GetRelativePath($repo, $Seed) -replace '\\', '/')" } else { "volume:$FromVolume" }) }
+    source = $(if ($Seed) { "seed:$(Get-SeedLabel $Seed)" } else { "volume:$FromVolume" }) }
 Write-SlsLog "config $Name from $BaseImage ($($result.source)) -> $Tag"
 
 function Save-WorkLogs([string]$Container) {
@@ -98,7 +110,7 @@ du -sh /dst/data.qcow2
 
     # ------------------------------------------------------------ boot, seed
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $server = Start-SlsServer -Image $BaseImage -Name $work -Credential $cred -Volume $vol -Ram $Ram -Cpu $Cpu -LicenseFile $LicenseFile -LicenseUser $LicenseUser -TimeoutSec 900
+    $server = Start-SlsServer -Image $BaseImage -Name $work -AdminCredential $cred -Volume $vol -Ram $Ram -Cpu $Cpu -LicenseFile $LicenseFile -LicenseUser $LicenseUser -TimeoutSec 900
     $result.healthySec = [math]::Round($sw.Elapsed.TotalSeconds)
     Write-SlsLog "work container $work healthy after $($result.healthySec) s"
     if ($Seed) {
@@ -135,7 +147,8 @@ du -sh /dst/data.qcow2
     # ------------------------------------------------------------ image
     $sw.Restart()
     Invoke-SlsDocker build -f (Join-Path $repo 'image\config.Dockerfile') --build-arg "BASE_IMAGE=$BaseImage" --build-arg "CONFIG_NAME=$Name" `
-        --build-arg "CONFIG_CREATED=$((Get-Date).ToUniversalTime().ToString('o'))" --build-arg "CONFIG_SOURCE=$($result.source)" -t $Tag $outDir | Out-Null
+        --build-arg "CONFIG_CREATED=$((Get-Date).ToUniversalTime().ToString('o'))" --build-arg "CONFIG_SOURCE=$($result.source)" `
+        --build-arg "ADMIN_PASSWORD_LABEL=$(if ($cred.GetNetworkCredential().Password -eq 'test') { 'test' } else { 'custom' })" -t $Tag $outDir | Out-Null
     foreach ($t in $extraTags) { Invoke-SlsDocker tag $Tag $t | Out-Null }
     $result.tags = @($Tag) + $extraTags
     $result.imageId = "$(Invoke-SlsDocker image inspect -f '{{.Id}}' $Tag)".Trim()

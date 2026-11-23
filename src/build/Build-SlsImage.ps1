@@ -9,14 +9,14 @@ Stages: Install -> Seal -> Convert -> Image -> Verify. Work state lives in docke
 out\builds\<id> (context.json, build.log, credentials.json, install/seal reports, build.json). A failed build keeps its
 state; resume with -BuildId <id> -From <stage>. A successful build removes the work volumes unless -Keep.
 
-The web admin password is SLS_BUILD_ADMIN_PASSWORD when set, else generated; it is stored only in the git-ignored
-out\builds\<id>\credentials.json. Consumers override it at run time with SLS_ADMIN_PASSWORD.
+The web admin password is SLS_BUILD_ADMIN_PASSWORD when set, else 'test' (user admin); it is recorded in the git-ignored
+out\builds\<id>\credentials.json. Consumers can change it at start with SLS_ADMIN_PASSWORD.
 
 .EXAMPLE
-pwsh build/Build-SlsImage.ps1
-pwsh build/Build-SlsImage.ps1 -SlsVersion 26.5 -NipmVersion 26.8.0
-pwsh build/Build-SlsImage.ps1 -BuildId 20261120-101500 -From Seal
-pwsh build/Build-SlsImage.ps1 -BuildId 20261120-101500 -Cleanup
+pwsh src/build/Build-SlsImage.ps1
+pwsh src/build/Build-SlsImage.ps1 -SlsVersion 26.5 -NipmVersion 26.8.0
+pwsh src/build/Build-SlsImage.ps1 -BuildId 20261120-101500 -From Seal
+pwsh src/build/Build-SlsImage.ps1 -BuildId 20261120-101500 -Cleanup
 #>
 [CmdletBinding()]
 param(
@@ -71,7 +71,6 @@ $Feeds = @($Feeds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim(
 $ExtraTag = @($ExtraTag | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $LicenseFile = @($LicenseFile | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $StageNames = @('Install', 'Seal', 'Convert', 'Image', 'Verify')
-$repo = Get-SlsRepoRoot
 
 function Save-Context($Ctx) { $Ctx | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Ctx.OutDir 'context.json') -Encoding utf8 }
 
@@ -84,8 +83,8 @@ function Remove-BuildWork($Ctx) {
 }
 
 # ---------------------------------------------------------------- context (new or resumed)
-if ($BuildId -and (Test-Path (Join-Path $repo "out\builds\$BuildId\context.json"))) {
-    $Ctx = Get-Content (Join-Path $repo "out\builds\$BuildId\context.json") -Raw | ConvertFrom-Json
+if ($BuildId -and (Test-Path (Join-Path (Get-SlsOutRoot) "builds\$BuildId\context.json"))) {
+    $Ctx = Get-Content (Join-Path (Get-SlsOutRoot) "builds\$BuildId\context.json") -Raw | ConvertFrom-Json
     # ConvertFrom-Json turns ISO strings into local DateTime values; keep them ISO UTC.
     if ($Ctx.Started -is [datetime]) { $Ctx.Started = $Ctx.Started.ToUniversalTime().ToString('o') }
     Set-SlsLogFile (Join-Path $Ctx.OutDir 'build.log')
@@ -102,7 +101,7 @@ if ($BuildId -and (Test-Path (Join-Path $repo "out\builds\$BuildId\context.json"
                 "$feedBase/released"; "$feedBase/released-critical"
             })
     }
-    $outDir = Join-Path $repo "out\builds\$BuildId"
+    $outDir = Join-Path (Get-SlsOutRoot) "builds\$BuildId"
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $Ctx = [pscustomobject]@{
         BuildId = $BuildId; OutDir = $outDir; Container = "sls-build-$BuildId"
@@ -116,7 +115,7 @@ if ($BuildId -and (Test-Path (Join-Path $repo "out\builds\$BuildId\context.json"
     }
     Set-SlsLogFile (Join-Path $outDir 'build.log')
     $credFile = Join-Path $outDir 'credentials.json'
-    $adminPassword = if ($env:SLS_BUILD_ADMIN_PASSWORD) { $env:SLS_BUILD_ADMIN_PASSWORD } else { New-SlsPassword }
+    $adminPassword = Get-SlsAdminPassword
     # Git-ignored (out/). The VM account password is reset to an unstored random value by the seal.
     [ordered]@{ adminUser = 'admin'; adminPassword = $adminPassword; vmUser = $VmUser; vmPassword = (New-SlsPassword 'Vm-') } |
         ConvertTo-Json | Set-Content $credFile -Encoding utf8
@@ -177,8 +176,8 @@ foreach ($stage in $StageNames[$first..$last]) {
 
 if ($failed) {
     Write-SlsLog "build $($Ctx.BuildId) failed in $failed. State kept (container $($Ctx.Container), volumes sls-build-$($Ctx.BuildId)-*)."
-    Write-SlsLog "  resume:  pwsh build/Build-SlsImage.ps1 -BuildId $($Ctx.BuildId) -From $failed"
-    Write-SlsLog "  cleanup: pwsh build/Build-SlsImage.ps1 -BuildId $($Ctx.BuildId) -Cleanup"
+    Write-SlsLog "  resume:  pwsh src/build/Build-SlsImage.ps1 -BuildId $($Ctx.BuildId) -From $failed"
+    Write-SlsLog "  cleanup: pwsh src/build/Build-SlsImage.ps1 -BuildId $($Ctx.BuildId) -Cleanup"
     exit 1
 }
 

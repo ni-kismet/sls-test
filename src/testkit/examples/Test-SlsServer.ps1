@@ -5,21 +5,20 @@ Example integration test against a SystemLink Server container: start, wait heal
 not sleeping), run a command in the guest, save logs on failure, remove the container.
 
 .EXAMPLE
-$env:SLS_IMAGE = 'sls-server:26.5-demo'; $env:SLS_TEST_PASSWORD = '<image admin password>'
-pwsh testkit/examples/Test-SlsServer.ps1
+pwsh src/testkit/examples/Test-SlsServer.ps1 -Image ghcr.io/rajsite/sls-server:26.5-demo
 .EXAMPLE
-pwsh testkit/examples/Test-SlsServer.ps1 -Image sls-server:26.5-demo -AdminPassword (Read-Host -AsSecureString)
+pwsh src/testkit/examples/Test-SlsServer.ps1 -Image sls-server:26.5-demo -AdminPassword (Read-Host -AsSecureString) -SetPassword
 #>
 param(
     [string]$Image = $(if ($env:SLS_IMAGE) { $env:SLS_IMAGE } else { 'sls-server:26.5-demo' }),
-    # The image's admin password (SLS_TEST_PASSWORD) or, with -SetPassword, the password to set at start.
-    [securestring]$AdminPassword = $(if ($env:SLS_TEST_PASSWORD) { ConvertTo-SecureString $env:SLS_TEST_PASSWORD -AsPlainText -Force }),
+    # The image's admin password (SLS_TEST_PASSWORD, else the default 'test') or, with -SetPassword, the password to
+    # set at start.
+    [securestring]$AdminPassword = (ConvertTo-SecureString $(if ($env:SLS_TEST_PASSWORD) { $env:SLS_TEST_PASSWORD } else { 'test' }) -AsPlainText -Force),
     [switch]$SetPassword,
     [string]$LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'sls-test-logs')
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\SlsTestKit.psm1') -Force
-if (-not $AdminPassword) { throw 'set SLS_TEST_PASSWORD or pass -AdminPassword' }
 $cred = [pscredential]::new('admin', $AdminPassword)
 
 $failures = [Collections.Generic.List[string]]::new()

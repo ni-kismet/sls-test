@@ -5,21 +5,24 @@ CI build of a SystemLink Server image (body of the sls-build-image action): base
 seeded configuration image with retries, one set of step outputs and a job summary.
 
 .DESCRIPTION
-Base image: scripts/Invoke-SlsBuild.ps1 (Build-SlsImage.ps1 with attempts; -OnBugcheck restart|resume), unless
+Base image: src/ci/Invoke-SlsBuild.ps1 (Build-SlsImage.ps1 with attempts, each restarting from Install), unless
 -BaseImage names an existing image (pulled when not present locally).
-Configuration image (-Config): sls/build/New-SlsConfigImage.ps1 with the seed sls/configs/<Config>/Seed.ps1 (or
--ConfigSeed), tag <base repository>:<base tag>-<Config> (for a digest base: <x.y.z>-<yyyyMMdd>-<Config> from the base's
-version and created labels, the base's own immutable tag), every -ExtraTag also as <tag>-<Config>. Every attempt starts
-fresh (a failed attempt's out folder is kept as sls/out/configs/<Config>-fail<n> for the logs).
+Configuration image (-Seed): src/build/New-SlsConfigImage.ps1 with a built-in seed (-Seed demo = src/seeds/demo/Seed.ps1)
+or a seed script path (relative to GITHUB_WORKSPACE, else the current folder). -ConfigName (default: the built-in name,
+or the seed's folder name for .../<name>/Seed.ps1, else the file's base name) names the configuration. Tag
+<base repository>:<x.y.z>-<yyyyMMdd-HHmm>-<ConfigName> (UTC seed time; unique per seed), every -ExtraTag also as
+<tag>-<ConfigName>. The seed script is checked (exists, parses, parameters) before any build. Every attempt starts
+fresh (a failed attempt's out folder is kept as configs/<ConfigName>-fail<n> for the logs).
 
-The admin password of the base image comes from SLS_BUILD_ADMIN_PASSWORD (both builds read it).
+Both builds use the web admin password SLS_BUILD_ADMIN_PASSWORD, else 'test'.
 
 GitHub step outputs: image (the configuration image if any, else the base image), image_id, tags, base_image,
-base_tags, config_image, sls_full_version, build_id, attempts, bugchecks, config_attempts, config_bugchecks, minutes,
-versions (JSON). Writes sls/out/ci-build.json; the logs are in sls/out/builds and sls/out/configs.
+base_tags, config_image, config_name, sls_full_version, build_id, attempts, bugchecks, config_attempts,
+config_bugchecks, minutes, versions (JSON). Output folder: SLS_OUT, else src/out (ci-build.json, builds/, configs/).
 
 .EXAMPLE
-pwsh scripts/ci/Build-SlsCi.ps1 -BuildId gh-123 -Repository ghcr.io/rajsite/sls-server -Ram 10G -Cpu 4 -Config migration
+pwsh src/ci/Build-SlsCi.ps1 -BuildId gh-123 -Repository ghcr.io/rajsite/sls-server -Ram 10G -Cpu 4 -Seed migration
+pwsh src/ci/Build-SlsCi.ps1 -BuildId gh-124 -BaseImage sls-server:26.5 -Seed tests/seed/Seed.ps1 -ConfigName test
 #>
 param(
     [Parameter(Mandatory)][string]$BuildId,
@@ -32,17 +35,19 @@ param(
     [string]$Ram = '10G',
     [int]$Cpu = 4,
     [int]$MaxAttempts = 3,
-    [ValidateSet('restart', 'resume')][string]$OnBugcheck = 'restart',
     [string]$BaseImage = '',
-    [string]$Config = '',
-    [string]$ConfigSeed = '',
+    [string]$Seed = '',
+    [string]$ConfigName = '',
     [int]$ConfigAttempts = 3,
     [string]$LicenseUser = $env:SLS_LICENSE_USER,
-    [string]$LicenseFile = ''
+    [string]$LicenseFile = '',
+    # Only check the arguments and the seed script (seconds), then return.
+    [switch]$Preflight
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$sls = Join-Path $root 'sls'
+$src = Split-Path $PSScriptRoot -Parent
+Import-Module (Join-Path $src 'build/SlsBuild.psm1') -Force
+$out = Get-SlsOutRoot
 $ciOutput = $env:GITHUB_OUTPUT
 
 function Split-List([string]$Text) { @($Text -split '[,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
@@ -90,9 +95,38 @@ function Get-FailureMessage([string[]]$Tail) {
 
 $record = [ordered]@{ buildId = $BuildId; base = $null; config = $null }
 $total = [Diagnostics.Stopwatch]::StartNew()
-$result = [ordered]@{ image = ''; image_id = ''; tags = ''; base_image = ''; base_tags = ''; config_image = ''; sls_full_version = ''
-    build_id = ''; attempts = 0; bugchecks = 0; config_attempts = 0; config_bugchecks = 0 }
+$result = [ordered]@{ image = ''; image_id = ''; tags = ''; base_image = ''; base_tags = ''; config_image = ''; config_name = ''; sls_full_version = ''
+    build_id = ''; attempts = 0; bugchecks = 0; config_attempts = 0; config_bugchecks = 0; floating_tags = '' }
 $failed = $null
+# Moving tags (base <repository>:<sls-version>, seeded <repository>:<feed version>-<config>): the action pushes them
+# only with floating-tag.
+$floating = @()
+
+# ------------------------------------------------------------ seed preflight (before a 60-90 min base build)
+$seedPath = $null
+if ($Seed) {
+    $builtin = Join-Path $src "seeds/$Seed/Seed.ps1"
+    if ($Seed -match '^[a-z0-9][a-z0-9-]*$' -and (Test-Path $builtin)) {
+        $seedPath = $builtin
+        if (-not $ConfigName) { $ConfigName = $Seed }
+    } else {
+        $seedPath = if ([IO.Path]::IsPathRooted($Seed)) { $Seed } else { Join-Path $(if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { (Get-Location).Path }) $Seed }
+        if (-not (Test-Path $seedPath)) {
+            $names = (Get-ChildItem (Join-Path $src 'seeds') -Directory | ForEach-Object Name) -join ', '
+            throw "seed '$Seed' is neither a built-in seed ($names) nor an existing file ($seedPath)"
+        }
+        if (-not $ConfigName) {
+            $leaf = Split-Path $seedPath -Leaf
+            $ConfigName = if ($leaf -eq 'Seed.ps1') { Split-Path (Split-Path $seedPath -Parent) -Leaf } else { [IO.Path]::GetFileNameWithoutExtension($leaf) }
+            $ConfigName = ($ConfigName.ToLowerInvariant() -replace '[^a-z0-9_-]+', '-').Trim('-', '_')
+        }
+    }
+    $seedPath = Test-SlsSeedScript $seedPath
+    if ($ConfigName -cnotmatch '^[a-z0-9][a-z0-9_-]{0,39}$') { throw "configuration name '$ConfigName' is invalid (lowercase letters, digits, - and _, at most 40)" }
+    Write-Host "seed $seedPath -> configuration '$ConfigName' (preflight ok)"
+} elseif ($ConfigName) { throw '-ConfigName needs -Seed' }
+if ($BaseImage -and -not $Seed) { throw '-BaseImage needs -Seed (the seeded image to build on it)' }
+if ($Preflight) { return }
 
 # ------------------------------------------------------------ base image
 if ($BaseImage) {
@@ -109,53 +143,50 @@ if ($BaseImage) {
     $result.sls_full_version = "$(& docker image inspect -f '{{index .Config.Labels "com.ni.sls.version"}}' $BaseImage 2>$null)".Trim()
     $record.base = [ordered]@{ image = $BaseImage; built = $false }
 } else {
-    $a = @('-BuildId', $BuildId, '-MaxAttempts', $MaxAttempts, '-OnBugcheck', $OnBugcheck, '-SlsVersion', $SlsVersion,
+    $a = @('-BuildId', $BuildId, '-MaxAttempts', $MaxAttempts, '-SlsVersion', $SlsVersion,
         '-Repository', $Repository, '-Ram', $Ram, '-Cpu', $Cpu)
     if ($Packages) { $a += @('-Packages', ((Split-List $Packages) -join ',')) }
     if ($Feeds) { $a += @('-Feeds', ((Split-List $Feeds) -join ',')) }
     if ($ExtraTag) { $a += @('-ExtraTag', ((Split-List $ExtraTag) -join ',')) }
     if ($LicenseFile) { $a += @('-LicenseFile', $LicenseFile) }
     if ($LicenseUser) { $a += @('-LicenseUser', $LicenseUser) }
-    $r = Invoke-Child (Join-Path $root 'scripts/Invoke-SlsBuild.ps1') $a
+    $r = Invoke-Child (Join-Path $PSScriptRoot 'Invoke-SlsBuild.ps1') $a
     $result.attempts = [int]$r.Out['attempts']; $result.bugchecks = [int]$r.Out['bugchecks']; $result.build_id = $r.Out['final_build_id']
     $record.base = [ordered]@{ built = $true; exit = $r.Code; outputs = $r.Out }
     if ($r.Code -ne 0) { $failed = "base image build failed after $($result.attempts) attempt(s)" }
     else {
         $result.base_image = $r.Out['image']; $result.base_tags = $r.Out['tags']; $result.sls_full_version = $r.Out['sls_full_version']
         $result.image_id = $r.Out['image_id']
+        $floating += "$($Repository.ToLowerInvariant()):$SlsVersion"
     }
 }
 $result.image = $result.base_image; $result.tags = $result.base_tags
 if (-not $result.image_id -and $result.base_image) { $result.image_id = "$(& docker image inspect -f '{{.Id}}' $result.base_image)".Trim() }
 
 # ------------------------------------------------------------ configuration image
-if ($Config -and -not $failed) {
-    $seed = if ($ConfigSeed) { $ConfigSeed } else { Join-Path $sls "configs/$Config/Seed.ps1" }
-    if (-not (Test-Path $seed)) { throw "seed script $seed not found (-Config $Config)" }
+if ($seedPath -and -not $failed) {
+    $Config = $ConfigName
+    $result.config_name = $Config
     $baseTag = $result.base_image
-    if ($baseTag -match '^[^@]+@sha256:') {
-        # Digest reference: rebuild the base's immutable tag (<x.y.z>-<yyyyMMdd>, stages/Image.ps1) from its labels.
-        $baseRepo = ($baseTag -split '@')[0]
-        $lbl = "$(& docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "org.opencontainers.image.created"}}' $baseTag)".Trim()
-        $ver, $created = $lbl -split '\|', 2
-        if ($ver -notmatch '^\d+\.\d+\.\d+' -or $created -notmatch '^\d{4}-\d{2}-\d{2}') { throw "base image $baseTag has no usable version/created labels ('$lbl')" }
-        $xyz = ([regex]::Match($ver, '^\d+\.\d+\.\d+')).Value
-        $cfgTag = "${baseRepo}:$xyz-$($created.Substring(0, 10) -replace '-', '')-$Config"
-    } else {
-        $i = $baseTag.LastIndexOf(':')
-        $cfgTag = "$($baseTag.Substring(0, $i)):$($baseTag.Substring($i + 1))-$Config"
-    }
+    # <repository>:<x.y.z>-<yyyyMMdd-HHmm>-<config> (UTC seed time): unique per seed, a re-seed never moves an earlier
+    # tag. -Repository, not the base's: a public base can be seeded into the caller's own package.
+    $cfgRepo = $Repository.ToLowerInvariant()
+    $lbl = "$(& docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "com.ni.sls.feed-version"}}' $baseTag)".Trim()
+    $ver, $feed = $lbl -split '\|', 2
+    if ($ver -notmatch '^(\d+\.\d+\.\d+)') { throw "base image $baseTag has no usable version label ('$lbl')" }
+    $cfgTag = "${cfgRepo}:$($matches[1])-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmm'))-$Config"
     $cfgExtra = @(Split-List $ExtraTag | ForEach-Object { "$_-$Config" })
-    $cfgDir = Join-Path $sls "out/configs/$Config"
+    if ($feed -match '^\d+\.\d+$') { $cfgExtra += "${cfgRepo}:$feed-$Config"; $floating += "${cfgRepo}:$feed-$Config" }
+    $cfgDir = Join-Path $out "configs/$Config"
     $attempts = [Collections.Generic.List[object]]::new()
     for ($n = 1; $n -le $ConfigAttempts; $n++) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         Write-Host "::group::configuration image $Config attempt $n of $ConfigAttempts"
-        $a = @('-BaseImage', $baseTag, '-Name', $Config, '-Seed', $seed, '-Tag', $cfgTag, '-Ram', $Ram, '-Cpu', $Cpu)
+        $a = @('-BaseImage', $baseTag, '-Name', $Config, '-Seed', $seedPath, '-Tag', $cfgTag, '-Ram', $Ram, '-Cpu', $Cpu)
         if ($cfgExtra) { $a += @('-ExtraTag', ($cfgExtra -join ',')) }
         if ($LicenseFile) { $a += @('-LicenseFile', $LicenseFile) }
         if ($LicenseUser) { $a += @('-LicenseUser', $LicenseUser) }
-        $r = Invoke-Child (Join-Path $sls 'build/New-SlsConfigImage.ps1') $a
+        $r = Invoke-Child (Join-Path $src 'build/New-SlsConfigImage.ps1') $a
         Write-Host '::endgroup::'
         $at = [ordered]@{ attempt = $n; minutes = [math]::Round($sw.Elapsed.TotalMinutes, 1); exit = $r.Code }
         if ($r.Code -eq 0) {
@@ -177,27 +208,28 @@ if ($Config -and -not $failed) {
     }
     $result.config_attempts = $attempts.Count
     $result.config_bugchecks = @($attempts | Where-Object { $_['bugcheck'] }).Count
-    $record.config = [ordered]@{ name = $Config; seed = $seed; tag = $cfgTag; attempts = $attempts }
+    $record.config = [ordered]@{ name = $Config; seed = $seedPath; tag = $cfgTag; attempts = $attempts }
     if (-not $result.config_image) { $failed = "configuration image $Config failed after $($attempts.Count) attempt(s)" }
 }
 
 # ------------------------------------------------------------ outputs, record, summary
 $result.minutes = [math]::Round($total.Elapsed.TotalMinutes, 1)
+$result.floating_tags = $floating -join ','
 $result.versions = '{}'
-if ($result.build_id -and (Test-Path (Join-Path $sls "out/builds/$($result.build_id)/build.json"))) {
-    $result.versions = (Get-Content (Join-Path $sls "out/builds/$($result.build_id)/build.json") -Raw | ConvertFrom-Json).versions | ConvertTo-Json -Compress -Depth 4
+if ($result.build_id -and (Test-Path (Join-Path $out "builds/$($result.build_id)/build.json"))) {
+    $result.versions = (Get-Content (Join-Path $out "builds/$($result.build_id)/build.json") -Raw | ConvertFrom-Json).versions | ConvertTo-Json -Compress -Depth 4
 } elseif ($result.base_image) {
     $lbl = "$(& docker image inspect -f '{{json .Config.Labels}}' $result.base_image 2>$null)".Trim()
     if ($lbl -and $lbl -ne 'null') { $result.versions = $lbl }
 }
 $record.result = $result
 $record.failed = $failed
-New-Item -ItemType Directory -Force -Path (Join-Path $sls 'out') | Out-Null
-$record | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $sls 'out/ci-build.json') -Encoding utf8
+New-Item -ItemType Directory -Force -Path $out | Out-Null
+$record | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $out 'ci-build.json') -Encoding utf8
 Write-CiOutput $result
 
 $md = @('### SystemLink Server image', '')
-$att = Join-Path $sls "out/builds/attempts-$BuildId.json"
+$att = Join-Path $out "builds/attempts-$BuildId.json"
 if (Test-Path $att) {
     $md += '| base attempt | build | from | minutes | result | failed stage | bugcheck | message |', '|---|---|---|---|---|---|---|---|'
     foreach ($x in @(Get-Content $att -Raw | ConvertFrom-Json)) {
@@ -206,7 +238,7 @@ if (Test-Path $att) {
     $md += ''
 }
 if ($result.build_id) {
-    $bj = Join-Path $sls "out/builds/$($result.build_id)/build.json"
+    $bj = Join-Path $out "builds/$($result.build_id)/build.json"
     if (Test-Path $bj) {
         $b = Get-Content $bj -Raw | ConvertFrom-Json
         $md += "Base stages (min): $(($b.stagesSec.PSObject.Properties | ForEach-Object { "$($_.Name) $([math]::Round($_.Value / 60, 1))" }) -join ', ')"
@@ -216,7 +248,7 @@ if ($result.build_id) {
 if ($record.config) {
     $md += '| config attempt | minutes | result | bugcheck | message |', '|---|---|---|---|---|'
     foreach ($x in $record.config.attempts) { $md += "| $($x.attempt) | $($x.minutes) | $($x.result) | $($x['bugcheck']) | $("$($x['message'])" -replace '\|', '/') |" }
-    $cj = Join-Path $sls "out/configs/$Config/config.json"
+    $cj = Join-Path $out "configs/$Config/config.json"
     if (Test-Path $cj) {
         $c = Get-Content $cj -Raw | ConvertFrom-Json
         $md += '', "Configuration image: ``$($c.tag)``, layer $([math]::Round($c.layerBytes / 1MB, 1)) MB; healthy $($c.healthySec) s, seed $($c.seedSec) s, seal $($c.sealSec) s, verify healthy $($c.verifyHealthySec) s, total $([math]::Round($c.totalSec / 60, 1)) min"

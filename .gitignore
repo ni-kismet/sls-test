@@ -1,5 +1,5 @@
 # Tooling build work files (credentials, logs, disks)
-sls/out/
+src/out/
 
 # Never commit license files
 *.lic
