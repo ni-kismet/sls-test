@@ -16,16 +16,30 @@ $ws = @{}
 function Utc($v) { if ($v -is [datetime]) { $v.ToUniversalTime() } else { [datetime]::Parse("$v", [cultureinfo]::InvariantCulture, 'AssumeUniversal,AdjustToUniversal') } }
 function Iso($v) { (Utc $v).ToString('yyyy-MM-ddTHH:mm:ssZ') }
 function Api([string]$Path, [string]$Method = 'GET', $Body = $null) { Invoke-WorkspaceRetry { Invoke-SlsApi $server $Path -Method $Method -Body $Body } }
-# Services learn about new workspaces asynchronously: for a short while they answer 400 Skyline.UnknownWorkspace.
+# Services learn about new workspaces asynchronously: for a short while they answer Skyline.UnknownWorkspace (the asset
+# service: UserDoesNotHaveCreatePrivilegeInWorkspace, even for the admin).
 # Multipart calls rebuild their content inside the script block because each send disposes it.
 function Invoke-WorkspaceRetry([scriptblock]$Call, [int]$TimeoutSec = 180) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($true) {
         try { return & $Call }
         catch {
-            if ($_.Exception.Message -notmatch 'UnknownWorkspace|workspace .* does not exist' -or $sw.Elapsed.TotalSeconds -ge $TimeoutSec) { throw }
+            if ($_.Exception.Message -notmatch '(?i)UnknownWorkspace|workspace.{0,80}(does not exist|not found|unknown)|WorkspaceNotFound|DoesNotHave\w*PrivilegeInWorkspace' -or $sw.Elapsed.TotalSeconds -ge $TimeoutSec) { throw }
             Start-Sleep -Seconds 3
         }
+    }
+}
+# Bulk create endpoints (Test Monitor, assets) answer 200 with a `failed` list and an `error` instead of an HTTP error,
+# for example while the service doesn't know a new workspace yet; turn that into an exception the retry above sees.
+# -Count 0: any number created (nested steps).
+function New-Bulk([string]$Path, [string]$Key, $Body, [int]$Count = 1) {
+    Invoke-WorkspaceRetry {
+        $r = Invoke-SlsApi $server $Path -Method POST -Body $Body
+        $created = @($r.$Key | Where-Object { $_ })
+        if (@($r.failed | Where-Object { $_ }).Count -or -not $created.Count -or ($Count -gt 0 -and $created.Count -ne $Count)) {
+            throw "POST $Path created $($created.Count) of $Count $Key`: $(ConvertTo-Json -InputObject $r.error -Depth 8 -Compress)"
+        }
+        , $created
     }
 }
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw "migration seed verify: $Message" } }
@@ -190,7 +204,7 @@ foreach ($f in $m.files) {
     $fileIds[$f.name] = ($x.uri -split '/')[-1]
 }
 
-Api 'nitestmonitor/v2/products' POST @{ products = @($m.products | ForEach-Object { @{ partNumber = $_.partNumber; name = $_.name; family = $_.family
+New-Bulk 'nitestmonitor/v2/products' products -Count $m.products.Count @{ products = @($m.products | ForEach-Object { @{ partNumber = $_.partNumber; name = $_.name; family = $_.family
                 keywords = $_.keywords; properties = $_.properties } }) } | Out-Null
 
 function New-StepRequest($st, [string]$resultId, $status, [bool]$failed) {
@@ -210,12 +224,12 @@ $i = 0
 foreach ($r in $m.results) {
     $i++
     $status = @{ statusType = $r.status }; if ($r.statusName) { $status.statusName = $r.statusName }
-    $res = (Api 'nitestmonitor/v2/results' POST @{ results = @(@{ programName = $m.resultDefaults.programName; status = $status; partNumber = $r.partNumber
+    $res = @(New-Bulk 'nitestmonitor/v2/results' results @{ results = @(@{ programName = $m.resultDefaults.programName; status = $status; partNumber = $r.partNumber
                     serialNumber = $r.serialNumber; operator = $m.resultDefaults.operator; hostName = $m.resultDefaults.hostName; workspace = $ws[$r.workspace]
                     startedAt = $base.AddHours($i).ToString('yyyy-MM-ddTHH:mm:ssZ'); totalTimeInSeconds = 10 + $i; keywords = @('mig')
-                    properties = @{ migKey = $r.serialNumber }; fileIds = @($r.files | Where-Object { $_ } | ForEach-Object { $fileIds[$_] }) }) }).results[0]
+                    properties = @{ migKey = $r.serialNumber }; fileIds = @($r.files | Where-Object { $_ } | ForEach-Object { $fileIds[$_] }) }) })[0]
     $steps = @($m.stepTemplates[$r.steps] | ForEach-Object { New-StepRequest $_ $res.id $status ($r.status -eq 'FAILED') })
-    Api 'nitestmonitor/v2/steps' POST @{ steps = $steps; updateResultTotalTime = $false } | Out-Null
+    New-Bulk 'nitestmonitor/v2/steps' steps -Count 0 @{ steps = $steps; updateResultTotalTime = $false } | Out-Null
 }
 
 # Hosted package: build a minimal .nipkg with nipkg pack in the guest, copy it out as base64, upload it to the pool and
@@ -261,10 +275,10 @@ foreach ($a in $m.assets) {
             @{ date = $d.ToString('yyyy-MM-ddTHH:mm:ssZ'); recommendedInterval = 12; nextRecommendedDate = $d.AddMonths(12).ToString('yyyy-MM-ddTHH:mm:ssZ')
                 comments = $_.comments; entryType = 'MANUAL'; operator = $op }
         })
-    $x = (Api 'niapm/v1/assets' POST @{ assets = @(@{ name = $a.name; modelName = $a.modelName; serialNumber = $a.serialNumber; vendorName = $a.vendorName
+    $x = @(New-Bulk 'niapm/v1/assets' assets @{ assets = @(@{ name = $a.name; modelName = $a.modelName; serialNumber = $a.serialNumber; vendorName = $a.vendorName
                     busType = $a.busType; assetType = 'GENERIC'; discoveryType = 'Manual'; workspace = $ws[$a.workspace]; supportsExternalCalibration = $true
                     location = @{ state = @{ assetPresence = 'PRESENT' } }; keywords = @('mig'); properties = @{ migKey = $a.serialNumber }
-                    externalCalibration = $cals[0] }) }).assets[0]
+                    externalCalibration = $cals[0] }) })[0]
     foreach ($c in $cals | Select-Object -Skip 1) { Api "niapm/v1/assets/$($x.id)/history/calibration" POST @{ externalCalibration = $c } | Out-Null }
 }
 
