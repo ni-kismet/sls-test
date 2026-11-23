@@ -504,35 +504,48 @@ Checklist:
 - [ ] W7.6 `e2e/README.md`: running locally (`docker run … -p 8080:80 sls-server:26.5-migration`, password via `Get-SlsImageCredential`), choosing a project, updating selectors.
 - [ ] W7.7 Run both suites locally against both local images: green. Also run each suite against the *other* image to confirm the isolation tests fail there. Commit and push.
 
-### W8. `build-images.yml`
+### W8. `build-images.yml` (slimmed after W6B)
 
-- [ ] W8.1 Trigger: `workflow_dispatch` only. Inputs:
-  - `sls_version` (default `26.5`)
-  - `packages` (default the four products from D6)
-  - `configs` (default `demo,migration`)
-  - `ram` (default `12G`), `cpu` (default `4`)
-  - `promote` (bool, default `true`)
-- [ ] W8.2 Top level: `permissions: { contents: read, packages: write }`; `concurrency: build-images` (no parallel builds); env `REPO=ghcr.io/rajsite/sls-server`.
-- [ ] W8.3 Job `matrix`: turns the `configs` CSV into a JSON matrix output.
-- [ ] W8.4 Job `base` (`timeout-minutes: 300`):
-  1. checkout; `sls-host-prep`
-  2. `scripts/Invoke-SlsBuild.ps1` (W4B.3: retries, attempts/bugcheck outputs) running `Build-SlsImage.ps1 -SlsVersion … -Packages … -Repository $REPO -BuildId gh-${{ github.run_id }} -Ram … -Cpu … -ExtraTag <full>-<date>-r${{ github.run_number }}` with `SLS_BUILD_ADMIN_PASSWORD` from the secret; host facts (CPU, `kvm_*`) in the summary as in `soak.yml`; EPYC 9V45 handling per §8
-  3. `Push-SlsImage.ps1` with only the immutable tag; outputs `image` (`$REPO@sha256:…`) and `full_version`
-  4. `if: always()`: `sls-upload-logs` for `sls/out/builds/gh-<run_id>` (artifact `base-logs`)
-- [ ] W8.5 Job `seed` (`needs: [matrix, base]`, `fail-fast: false`, `timeout-minutes: 75`):
-  1. checkout; `sls-host-prep` (with the license if configured); `docker pull <base digest>`
-  2. `New-SlsConfigImage.ps1 -BaseImage <digest> -Name <cfg> -Seed sls/configs/<cfg>/Seed.ps1 -ExtraTag 26.5-<cfg>-r<run>` with `SLS_BUILD_ADMIN_PASSWORD` (the base credential source on a fresh runner)
-  3. push; output the digest; write `seed-<cfg>.json` (`{config, image}`) as an artifact
-  4. `sls-upload-logs` (artifact `seed-<cfg>-logs`)
-- [ ] W8.6 Job `promote` (`needs: [base, seed]`, `if: inputs.promote`, no prep):
-  1. `docker login`
-  2. `docker buildx imagetools create -t $REPO:26.5 -t $REPO:<x.y.z> <base digest>`; same for `26.5-<cfg>`
-  3. upload `images.json` (`{base, demo, migration}` digests + tags) as artifact `images`
-  4. job summary: tags, digests, products and versions, sizes, timings, Windows eval expiry, SystemLink module evaluation end (build date + 45 days, W4.4)
-- [ ] W8.7 First run with base only (`configs: ''`, `promote: false`): fix failures; record timings in §7. **Before it pushes**, the `sls-server` package must already exist as Private (§3, W4B.7: a first push by `GITHUB_TOKEN` creates a public package). Then in the package settings: visibility **Private**, "Manage Actions access" lists `sls-test`, repo link shown. Log the runner CPU (`lscpu | grep -E 'Model name|Virtualization'`, and `kvm_amd`/`kvm_intel` parameters) in the host summary, and record any `[sls] ... Windows bugcheck` / unhealthy hang (§8 nested-KVM risk).
-- [ ] W8.7a *Superseded by W4B* (the soak workflows and the gate live there). Stability soak on the GitHub runner, before W9 relies on it: a `workflow_dispatch` workflow `soak.yml` (inputs `image`, `jobs` default 5, `minutes` default 15, `runs-on` default `ubuntu-latest`; `timeout-minutes: 180`): checkout both repos, `sls-host-prep`, `docker pull <image>`, `pwsh sls/build/Test-SlsStability.ps1 -Image <image> -Lane ci -Jobs <jobs> -JobMinutes <minutes>` with `SLS_BUILD_ADMIN_PASSWORD`; upload `sls/out/stability` (`jobs.jsonl`, `host.json`, lane logs, screenshots; no Windows OCR on Linux, so read the stop code from `*-bsod.ppm`). Run it 2–3 times (different runner hosts). Gate: 0 failures in 10+ jobs → W9 as planned; any bugcheck/hang → apply the W9.1 retry and record the rate in §8; more than about 1 in 10 → try a larger runner / other CPU vendor or plan self-hosted bare-metal KVM runners (§8).
-- [ ] W8.8 Full run (base + both seeds + promote): green; floating tags point at the new digests (`docker buildx imagetools inspect`).
+W6B moved the build internals into `sls-build-image` (build retries, restart after a bugcheck, host facts, push guard,
+push retries, leak-guarded logs). W8 is now a thin workflow around it: one base build, parallel seeds from the base
+**digest** on fresh runners, and a promote job that moves the floating tags only after every image of the run is
+pushed. The W4B soaks replace the old W8.7a.
 
+- [x] W8.1 Shared action changes (sls-test `afa4135`):
+  - `sls-build-image` input `floating-tag` (default `true`): `false` leaves `<repository>:<sls-version>` out of the
+    base push, so a base build never moves `:26.5` on its own.
+  - `Build-SlsCi.ps1`: seeding a digest reference (`<repo>@sha256:…`) tags the seeded image
+    `<repo>:<x.y.z>-<yyyyMMdd>-<config>`, the base's own immutable tag rebuilt from its
+    `org.opencontainers.image.version`/`created` labels (the tag split at the last `:` made an invalid tag).
+- [x] W8.2 `scripts/ci/Publish-SlsImages.ps1`: reads the base and seeded images from the registry (labels of the
+  `linux/amd64` manifest; the runner's containerd store pushes an OCI index), checks every seeded image has the base's
+  version, writes `images.json` and the job summary (versions, products, Windows evaluation expiry, module evaluation
+  end = build + 45 days). With `-Promote` it moves `<sls-version>`, `<x.y.z>`, `<sls-version>-<config>`,
+  `<x.y.z>-<config>` by copying the manifest through the registry API (GET by digest, PUT by tag) and reads each tag
+  back to confirm the digest. Tested locally (read-only) against `sls-server-actions-test`.
+- [x] W8.3 `.github/workflows/build-images.yml` (`workflow_dispatch` only, `concurrency: build-images`,
+  `packages: write`). Inputs: `sls-version` (`26.5`), `packages` (`''` = D6), `configs` (`demo,migration`),
+  `base-image` (`''`; a tag or digest in `repository` re-seeds an existing base without the 60–90 min base build),
+  `promote` (`true`), `repository` (`ghcr.io/rajsite/sls-server`), `allow-new-package` (`false`), `reject-cpus`.
+  Jobs:
+  - `matrix`: `configs` → JSON list (names checked).
+  - `base` (340 min): `sls-build-image` with `push: true`, `floating-tag: false`, tag `r<run>`, artifact
+    `base-logs`; or, with `base-image`, the digest of that image (registry HEAD). Output `image` = base digest.
+  - `seed` (matrix, `fail-fast: false`, 120 min): `sls-build-image` with `base-image: <base digest>`, `config`,
+    tag `r<run>` (→ `r<run>-<config>`), `allow-new-package: false`, artifact `seed-<config>-logs`; records
+    `{config, image (digest), tag, minutes, attempts, host_cpu}` as artifact `image-<config>`.
+  - `promote` (15 min; runs only when the base and every seed succeeded): `Publish-SlsImages.ps1`; artifact
+    `images` (`images.json`, 90 days) for the e2e workflows (W9.2: `.configs.<name>.image`).
+  - actionlint clean.
+- [ ] W8.4 Re-seed run against the test package (`repository: ghcr.io/rajsite/sls-server-actions-test`,
+  `base-image: …:26.5.1-20261123`, `configs: demo,migration`, `promote: true`): green; floating tags point at the
+  new digests.
+- [ ] W8.5 Full run against the test package (base build + both seeds + promote): green; `:26.5` not pushed by the
+  base job, moved by promote; timings in §7.
+- [ ] W8.6 First run against `ghcr.io/rajsite/sls-server` (**user decision**, §3): either create the package as
+  Private first (push from a personal token, or flip visibility in the package settings right after the first run;
+  then "Manage Actions access" → `sls-test` write), or accept a public package and dispatch with
+  `allow-new-package: true`. Not dispatched by the agent.
 ### W9. e2e workflows
 
 - [ ] W9.1 `.github/workflows/_sls-e2e.yml` (`workflow_call`):

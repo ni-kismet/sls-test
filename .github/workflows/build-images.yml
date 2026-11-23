@@ -61,7 +61,9 @@ jobs:
         run: |
           $c = @($env:CONFIGS -split '[,\s]+' | Where-Object { $_ })
           foreach ($n in $c) { if ($n -notmatch '^[a-z0-9][a-z0-9-]*$') { throw "invalid configuration name '$n'" } }
-          "configs=$(ConvertTo-Json -InputObject $c -AsArray -Compress)" | Add-Content $env:GITHUB_OUTPUT
+          $json = if ($c.Count) { $c | ConvertTo-Json -AsArray -Compress } else { '[]' }
+          Write-Host "configs=$json"
+          "configs=$json" | Add-Content $env:GITHUB_OUTPUT
 
   base:
     runs-on: ubuntu-latest
