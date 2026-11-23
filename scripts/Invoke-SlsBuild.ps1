@@ -7,8 +7,9 @@ nested-KVM runner).
 .DESCRIPTION
 After a failure the failed stage and message are read from the build's build.log. A failed Install starts over with
 a new build id (<BuildId>-a<n>, after cleaning up the failed one); a later stage stops the build container and resumes
-the same build with -From <stage>. Every attempt is recorded in sls/out/builds/attempts-<BuildId>.json. GitHub step
-outputs (in addition to those of Build-SlsImage.ps1): attempts, bugchecks, final_build_id.
+the same build with -From <stage>. A Windows bugcheck in a later stage also starts over unless -OnBugcheck resume (the
+crashed guest's disk may be inconsistent). Every attempt is recorded in sls/out/builds/attempts-<BuildId>.json. GitHub
+step outputs (in addition to those of Build-SlsImage.ps1): attempts, bugchecks, final_build_id.
 
 Arguments other than -BuildId and -MaxAttempts are passed to Build-SlsImage.ps1 on the first attempt (a resume
 takes them from the build's context.json).
@@ -19,6 +20,7 @@ pwsh scripts/Invoke-SlsBuild.ps1 -BuildId gh-123 -MaxAttempts 3 -Repository ghcr
 param(
     [Parameter(Mandatory)][string]$BuildId,
     [int]$MaxAttempts = 3,
+    [ValidateSet('restart', 'resume')][string]$OnBugcheck = 'restart',
     [Parameter(ValueFromRemainingArguments)][object[]]$BuildArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -67,7 +69,7 @@ for ($n = 1; $n -le $MaxAttempts; $n++) {
     if ($n -eq $MaxAttempts) { break }
 
     $ctxFile = Join-Path $builds "$id/context.json"
-    if ($f.stage -eq 'Install' -or -not (Test-Path $ctxFile)) {
+    if ($f.stage -eq 'Install' -or -not (Test-Path $ctxFile) -or ($a.bugcheck -and $OnBugcheck -eq 'restart')) {
         if (Test-Path $ctxFile) { & pwsh -NoProfile -File $build -BuildId $id -Cleanup }
         $id = "$BuildId-a$($n + 1)"; $from = 'Install'
     } else {
