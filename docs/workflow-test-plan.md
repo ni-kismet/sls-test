@@ -397,8 +397,83 @@ Checklist:
   - scans text files and expanded `.zip` entries; on a hit prints only the file name, deletes the path, exits 1
   - local test with a planted fake secret in a plain file and inside a zip
 - [ ] W6.3 `scripts/Push-SlsImage.ps1 -Image <ref> -Tag <tag[]>`: tags, pushes with up to 3 retries (backoff), prints and outputs `repo@sha256:…`.
-- [ ] W6.4 `.github/actions/sls-upload-logs/action.yml`: stage the given paths with excludes (`credentials.json`, `oem/`, `ca-certificates.crt`, `*.qcow2`, `*.img`, `*.iso`, `.auth/`, license folder) → `Test-NoSecret.ps1` → `actions/upload-artifact` (`retention-days: 7`).
+- [ ] W6.4 *Becomes `sls-collect-logs` in W6B.2.* `.github/actions/sls-upload-logs/action.yml`: stage the given paths with excludes (`credentials.json`, `oem/`, `ca-certificates.crt`, `*.qcow2`, `*.img`, `*.iso`, `.auth/`, license folder) → `Test-NoSecret.ps1` → `actions/upload-artifact` (`retention-days: 7`).
 - [ ] W6.5 Run the sync, commit `sls/` and the scripts, push.
+
+### W6B. Reusable actions: build an image, start a server
+
+Goal: one way to build and one way to start SystemLink in every workflow here (`build-images`, `soak`, e2e) and in
+other repositories. Composite actions that wrap the existing tooling; W8/W9 then become short workflows around them.
+Design approved 2026-11-22 (defaults below are the approved ones).
+
+Layout:
+
+```
+.github/actions/
+  sls-build-image/action.yml    build a base or seeded image (retries), optionally push
+  sls-start-server/action.yml   pull, start, wait until usable, retry once after a guest crash
+  sls-collect-logs/action.yml   stage → leak guard → upload (replaces the W6.4 sls-upload-logs)
+  sls-host-prep/action.yml      kept; thin wrapper over scripts/ci/host-prep.sh
+scripts/ci/
+  host-prep.sh, host-facts.sh   shared by all actions (no nested local `uses:`)
+  Start-SlsCi.ps1               start / wait / coverage / crash retry / outputs (uses sls/testkit)
+  Build-SlsCi.ps1               base (Invoke-SlsBuild) or seeded (New-SlsConfigImage) build with retries, outputs
+```
+
+Rules for the actions:
+- Tooling is found through `${{ github.action_path }}/../../..`, not the caller's workspace, so the actions work as
+  `./.github/actions/<name>` after checkout **and** as `rajsite/sls-test/.github/actions/<name>@<ref>` from another
+  repository without a checkout of `sls-test`. A local `uses: ./…` inside a composite resolves against the caller's
+  workspace, so the actions share scripts, not nested local actions (only marketplace actions are nested).
+- Secrets arrive as inputs (composite actions can't read `secrets`), are masked at first use, reach only the env of
+  the step that needs them, never outputs or `GITHUB_ENV`. Inputs reach scripts only through `env:`.
+- Every upload goes through `sls-collect-logs` (excludes `credentials.json`, `oem/`, `ca-certificates.crt`, disks,
+  `*.lic`, `.auth/`; `Test-NoSecret.ps1`; upload only if clean).
+- Composite actions have no post step: collecting server logs after a failed test is the caller's
+  `sls-collect-logs` step with `if: failure()`; the hosted runner is discarded, so nothing needs stopping.
+
+`sls-build-image` inputs (default): `admin-password` (required), `config` (`''` = base; `demo`/`migration` = seeded
+image on `base-image` with `sls/configs/<config>/Seed.ps1`), `base-image`, `repository`
+(`ghcr.io/<owner>/sls-server`), `sls-version` (`26.5`), `packages` (D6), `ram` (`10G`), `cpu` (`4`), `tags` (extra,
+one per line), `max-attempts` (`3`), `on-bugcheck` (`restart` = fresh Install with a new build id; `resume`),
+`reject-cpus` (`''`, regex of host CPU models to fail fast on), `push` (`false`), `registry-token` (`github.token`),
+`allow-new-package` (`false`), `host-prep` (`true`), `min-free-gb` (`60`), `upload-logs` (`always`|`failure`|`never`),
+`log-artifact`. Outputs: `image`, `digest`, `build-id`, `attempts`, `bugchecks`, `host-cpu`, `minutes`, `versions`
+(JSON). Steps: host facts + `reject-cpus` → host prep → mask → build with retries → push (guard, retries, digest,
+anonymous visibility check) → job summary → logs.
+
+`sls-start-server` inputs (default): `image` (required), `pull` (`true`), `registry-token`, `admin-password` (the
+image's baked password: authenticated healthcheck and service checks), `name` (`sls`), `port` (`8080`, on
+127.0.0.1), `ram` (`8G`), `cpu` (`4`), `wait-for` (`services` = healthy + every migration-coverage API answers;
+`healthy`; `none`), `healthy-timeout-minutes` (`15`), `services-timeout-minutes` (`10`), `crash-retries` (`1`),
+`replace` (`false`: remove an existing container of that name first), `license-b64`, `license-user`, `host-prep`
+(`true`), `min-free-gb` (`40`). Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`,
+`crash` (stop code), `host-cpu`; exports `SLS_BASE_URL`, `SLS_CONTAINER`. Job summary: image, CPU, timings, retries.
+
+Push guard: before a push, the package's visibility is read with the token
+(`/users|orgs/<owner>/packages/container/<name>`); a missing package needs `allow-new-package: true` (a first push
+by `GITHUB_TOKEN` from this public repository creates a **public** package), a non-private one is reported. After
+the push an anonymous manifest request shows whether the image is public (warning in the summary). The user accepts
+a public test package with the test admin password for now (2026-11-22), so test workflows set
+`allow-new-package: true`.
+
+Crash during tests (after `sls-start-server` returned) is the reusable e2e workflow's job (W9.1): on a bugcheck or an
+unhealthy container, `sls-start-server` again with `replace: true` and rerun the tests once.
+
+Checklist:
+- [ ] W6B.1 `scripts/ci/host-facts.sh` (`runner.json`: CPU, hypervisor, `kvm_*`; summary line) and
+  `scripts/ci/host-prep.sh` (body of `sls-host-prep`); `sls-host-prep` and `soak.yml` use them.
+- [ ] W6B.2 `sls-collect-logs`: inputs `path` (lines), `container` (adds `docker logs` + `Save-SlsLogs`), `artifact`,
+  `admin-password`, `retention-days` (7).
+- [ ] W6B.3 `scripts/ci/Build-SlsCi.ps1` + `sls-build-image` (base and seeded; `-OnBugcheck`, `-RejectCpu`; push
+  guard; summary).
+- [ ] W6B.4 `scripts/ci/Start-SlsCi.ps1` + `sls-start-server`; local check in WSL against `sls-server-mod:26.5`.
+- [ ] W6B.5 `.github/workflows/actions-test.yml` (`workflow_dispatch`): build base with `push: false` → start it with
+  `pull: false` → coverage check; optional seeded build (`config`) on the same runner; optional push to a test
+  package and a second job that starts it from the registry. Monitor with gh until green.
+- [ ] W6B.6 `soak.yml` and `soak-image.yml` use `sls-build-image`; smoke soak green.
+- [ ] W6B.7 README: how to use the actions here and from another repository (pin a tag; package access for that
+  repository).
 
 ### W7. Playwright suites (in `sls-test/e2e`, developed locally)
 
