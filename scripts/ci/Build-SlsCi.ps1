@@ -63,6 +63,29 @@ function Invoke-Child([string]$Script, [object[]]$Arguments) {
     Remove-Item $tmp.FullName -Force
     return [pscustomobject]@{ Code = $code; Out = $o; Tail = $lines }
 }
+function Get-FailureMessage([string[]]$Tail) {
+    # pwsh's concise error view spreads one error over colored lines: "Exception: <where>", "Line |", "  31 | <code>",
+    # "     | ~~~", "     | <message>" (or JSON continuation lines). Rebuild one plain line from the last such block.
+    $plain = @($Tail | ForEach-Object { $_ -replace '\x1b\[[0-9;?]*[A-Za-z]', '' })
+    $i = -1
+    for ($k = $plain.Count - 1; $k -ge 0; $k--) { if ($plain[$k] -match 'Exception:') { $i = $k; break } }
+    if ($i -lt 0) {
+        $msg = "$($plain | Where-Object { $_ -match 'bugcheck|failed|error|not healthy|is exited' -and $_ -notmatch '^::' } | Select-Object -Last 1)"
+    } else {
+        $parts = [Collections.Generic.List[string]]::new()
+        $parts.Add(($plain[$i] -replace '^.*?Exception:\s*', ''))
+        for ($k = $i + 1; $k -lt [Math]::Min($plain.Count, $i + 15); $k++) {
+            $l = $plain[$k]
+            if (-not $l.Trim() -or $l -match '^\[\d\d:\d\d:\d\d\]|^::|Exception:') { break }
+            if ($l -match '^\s*(Line|\d+)\s*\|' -or $l -match '^\s*\|\s*~+\s*$') { continue }
+            $parts.Add(($l -replace '^\s*\|\s?', '').Trim())
+        }
+        $msg = $parts -join ' '
+    }
+    $msg = ($msg -replace '\s+', ' ').Trim()
+    if ($msg.Length -gt 400) { $msg = $msg.Substring(0, 400) }
+    $msg
+}
 
 $record = [ordered]@{ buildId = $BuildId; base = $null; config = $null }
 $total = [Diagnostics.Stopwatch]::StartNew()
@@ -129,9 +152,8 @@ if ($Config -and -not $failed) {
             $result.image = $r.Out['image']; $result.image_id = $r.Out['image_id']; $result.tags = $r.Out['tags']; $result.config_image = $r.Out['image']
             break
         }
-        $msg = "$($r.Tail | Where-Object { $_ -match 'bugcheck|Exception|failed|error|not healthy|is exited' -and $_ -notmatch '^::' } | Select-Object -Last 1)".Trim()
+        $msg = Get-FailureMessage $r.Tail
         if (-not $msg) { $msg = "exit $($r.Code)" }
-        $msg = $msg.Substring(0, [Math]::Min(300, $msg.Length))
         $at.result = 'failed'; $at.message = $msg; $at.bugcheck = [bool]($msg -match 'bugcheck')
         $attempts.Add($at)
         Write-Host "::warning::configuration image $Config attempt $n failed$(if ($at.bugcheck) { ' (Windows bugcheck)' }): $msg"
