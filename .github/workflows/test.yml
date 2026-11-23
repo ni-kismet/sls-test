@@ -1,0 +1,140 @@
+name: test
+
+# Tests the actions end to end, ordered to fail early and build as little as possible:
+#   plan   (seconds)  syntax + seed contract checks; rebuild the base only when the change touches what goes into it
+#                     (src/build, src/image except config.Dockerfile), on dispatch with base=rebuild, or when the
+#                     reuse base is missing; otherwise seed the existing base of the test package
+#   build  (~15 min reuse, ~90 min rebuild)  sls-build-image with the custom seed tests/seed/Seed.ps1, pushed
+#   start  (~10 min, fresh runner)  sls-start-server from the registry by digest, checks, the seed's -Verify
+
+on:
+  push:
+    branches: [main]
+    paths: [sls-build-image/**, sls-start-server/**, sls-collect-logs/**, src/**, tests/**, .github/workflows/test.yml]
+  pull_request:
+    paths: [sls-build-image/**, sls-start-server/**, sls-collect-logs/**, src/**, tests/**, .github/workflows/test.yml]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base image
+        type: choice
+        options: [reuse, rebuild]
+        default: reuse
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: test-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPOSITORY: ghcr.io/rajsite/sls-server-actions-test
+  REUSE_BASE: ghcr.io/rajsite/sls-server-actions-test:26.5
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      base-image: ${{ steps.plan.outputs.base-image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Syntax and seed contract
+        shell: pwsh
+        run: ./tests/Test-Syntax.ps1
+
+      - name: Rebuild or reuse the base
+        id: plan
+        shell: pwsh
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_BASE: ${{ inputs.base }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          TOKEN: ${{ github.token }}
+        run: |
+          $rebuild = $false; $why = ''
+          if ($env:EVENT -eq 'workflow_dispatch') {
+            $rebuild = $env:DISPATCH_BASE -eq 'rebuild'; $why = "dispatched with base=$env:DISPATCH_BASE"
+          } else {
+            $from = if ($env:EVENT -eq 'pull_request') { $env:PR_BASE } else { $env:BEFORE }
+            if (-not $from -or $from -match '^0+$') {
+              $why = 'no previous commit to compare with'
+            } else {
+              $changed = @(git diff --name-only "$from" "$env:GITHUB_SHA")
+              if ($LASTEXITCODE) { throw "git diff $from failed" }
+              $base = @($changed | Where-Object { $_ -match '^src/(build|image)/' -and $_ -ne 'src/image/config.Dockerfile' })
+              $rebuild = $base.Count -gt 0
+              $why = if ($rebuild) { "base content changed: $(($base | Select-Object -First 5) -join ', ')" } else { 'base content unchanged' }
+            }
+          }
+          if (-not $rebuild) {
+            $name = ($env:REUSE_BASE -replace '^ghcr\.io/', '') -replace ':.*$', ''
+            $tag = $env:REUSE_BASE -replace '^.*:', ''
+            $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("rajsite:$env:TOKEN"))
+            $bearer = (Invoke-RestMethod "https://ghcr.io/token?scope=repository:${name}:pull" -Headers @{ Authorization = "Basic $basic" }).token
+            $accept = 'application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+            $r = Invoke-WebRequest "https://ghcr.io/v2/$name/manifests/$tag" -Method Head -SkipHttpErrorCheck -Headers @{ Authorization = "Bearer $bearer"; Accept = $accept }
+            if ([int]$r.StatusCode -eq 200) {
+              $image = "$env:REPOSITORY@$($r.Headers['Docker-Content-Digest'])"
+            } else { $rebuild = $true; $why += "; $env:REUSE_BASE missing ($($r.StatusCode))" }
+          }
+          $msg = if ($rebuild) { "rebuild the base ($why)" } else { "reuse $env:REUSE_BASE = $image ($why)" }
+          Write-Host "::notice::$msg"
+          "base-image=$(if (-not $rebuild) { $image })" | Add-Content $env:GITHUB_OUTPUT
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    outputs:
+      out: ${{ toJSON(steps.build.outputs) }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        id: build
+        uses: ./sls-build-image
+        with:
+          seed: tests/seed/Seed.ps1
+          config-name: test
+          base-image: ${{ needs.plan.outputs.base-image }}
+          repository: ${{ env.REPOSITORY }}
+          push: 'true'
+          tags: r${{ github.run_number }}
+          floating-tag: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+          log-artifact: build-logs
+
+  start:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start
+        id: start
+        uses: ./sls-start-server
+        with:
+          image: ${{ needs.build.outputs.digest }}
+
+      - name: Check
+        shell: pwsh
+        env:
+          START_OUT: ${{ toJSON(steps.start.outputs) }}
+          BUILD_OUT: ${{ needs.build.outputs.out }}
+          SEED: tests/seed/Seed.ps1
+        run: ./tests/Test-SlsActionsRun.ps1
+
+      - name: Logs
+        if: failure()
+        uses: ./sls-collect-logs
+        with:
+          container: sls
+          artifact: start-logs

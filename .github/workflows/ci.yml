@@ -1,0 +1,33 @@
+name: ci
+
+# Fast checks on every push and PR (about 1 min): actionlint, PowerShell parse + seed contract, shellcheck.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+
+      - name: PowerShell parse and seed contract
+        shell: pwsh
+        run: ./tests/Test-Syntax.ps1
+
+      - name: shellcheck
+        run: shellcheck -S error src/ci/*.sh src/image/*.sh src/image/bin/*

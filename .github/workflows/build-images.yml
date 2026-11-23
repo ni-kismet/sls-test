@@ -1,11 +1,11 @@
 name: build-images
 
-# W8: builds the SystemLink Server images and publishes them to ghcr.io. Manual dispatch only (D3).
-#   base     sls-build-image: base image, pushed with its immutable tags only (<x.y.z>-<yyyyMMdd>, r<run>); or, with
+# Builds the SystemLink Server images and publishes them to ghcr.io. Manual dispatch only.
+#   base     sls-build-image: base image, pushed with its immutable tags only (<x.y.z>-<yyyyMMdd-HHmm>, r<run>); or, with
 #            the base-image input, an existing base resolved to its digest (re-seed without a 60-90 min base build)
 #   seed     one job per configuration (parallel, fresh runners): sls-build-image seeds the base digest, pushes
-#            <x.y.z>-<yyyyMMdd>-<config> and r<run>-<config>, records its digest (artifact image-<config>)
-#   promote  after every image of the run is pushed: images.json (artifact images, read by the e2e workflows), job
+#            <x.y.z>-<yyyyMMdd-HHmm>-<config> and r<run>-<config>, records its digest (artifact image-<config>)
+#   promote  after every image of the run is pushed: images.json (artifact images), job
 #            summary, and with promote the floating tags <sls-version>[-<config>] and <x.y.z>[-<config>]
 
 on:
@@ -18,7 +18,7 @@ on:
         description: NI packages, comma separated ('' = server + Software Configuration, Test and Asset modules)
         default: ''
       configs:
-        description: Seeded images to build, comma separated ('' = base only)
+        description: Built-in seeds to build (src/seeds), comma separated ('' = base only)
         default: demo,migration
       base-image:
         description: Seed this existing base image (tag or digest in the repository) instead of building one
@@ -30,10 +30,6 @@ on:
       repository:
         description: Image repository
         default: ghcr.io/rajsite/sls-server
-      allow-new-package:
-        description: Allow the first push to create the package (from this public repo it becomes PUBLIC)
-        type: boolean
-        default: false
       reject-cpus:
         description: Host CPU models to fail fast on (extended regex)
         default: ''
@@ -54,13 +50,17 @@ jobs:
     outputs:
       configs: ${{ steps.m.outputs.configs }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/seeds
+
       - id: m
         shell: pwsh
         env:
           CONFIGS: ${{ inputs.configs }}
         run: |
           $c = @($env:CONFIGS -split '[,\s]+' | Where-Object { $_ })
-          foreach ($n in $c) { if ($n -notmatch '^[a-z0-9][a-z0-9-]*$') { throw "invalid configuration name '$n'" } }
+          foreach ($n in $c) { if (-not (Test-Path "src/seeds/$n/Seed.ps1")) { throw "no built-in seed '$n' (src/seeds/<name>/Seed.ps1)" } }
           $json = if ($c.Count) { $c | ConvertTo-Json -AsArray -Compress } else { '[]' }
           Write-Host "configs=$json"
           "configs=$json" | Add-Content $env:GITHUB_OUTPUT
@@ -76,9 +76,8 @@ jobs:
       - name: Build base
         id: build
         if: inputs.base-image == ''
-        uses: ./.github/actions/sls-build-image
+        uses: ./sls-build-image
         with:
-          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
           repository: ${{ env.REPOSITORY }}
           sls-version: ${{ env.SLS_VERSION }}
           packages: ${{ inputs.packages }}
@@ -86,7 +85,6 @@ jobs:
           reject-cpus: ${{ inputs.reject-cpus }}
           push: 'true'
           floating-tag: 'false'
-          allow-new-package: ${{ inputs.allow-new-package }}
           log-artifact: base-logs
 
       - name: Existing base
@@ -136,17 +134,16 @@ jobs:
 
       - name: Seed ${{ matrix.config }}
         id: build
-        uses: ./.github/actions/sls-build-image
+        uses: ./sls-build-image
         with:
-          admin-password: ${{ secrets.SLS_ADMIN_PASSWORD }}
           base-image: ${{ needs.base.outputs.image }}
-          config: ${{ matrix.config }}
+          seed: ${{ matrix.config }}
           repository: ${{ env.REPOSITORY }}
           sls-version: ${{ env.SLS_VERSION }}
           tags: r${{ github.run_number }}
           reject-cpus: ${{ inputs.reject-cpus }}
           push: 'true'
-          allow-new-package: 'false'
+          floating-tag: 'false'
           log-artifact: seed-${{ matrix.config }}-logs
 
       - name: Record
@@ -199,7 +196,7 @@ jobs:
             SeedDir = "$env:RUNNER_TEMP/image"; Configs = $env:CONFIGS; Promote = ($env:PROMOTE -eq 'true')
             Out = "$env:RUNNER_TEMP/images.json"
           }
-          scripts/ci/Publish-SlsImages.ps1 @p
+          src/ci/Publish-SlsImages.ps1 @p
 
       - uses: actions/upload-artifact@v4
         with:
