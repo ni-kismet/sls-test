@@ -158,8 +158,14 @@ The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-se
 
 ## Run a server locally
 
-Needs Docker with `/dev/kvm`: Linux with KVM, or Docker on Windows with WSL2 and nested virtualization. The test package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is
-needed. Tags: `26.5` (base), `26.5-demo`, `26.5-migration`.
+Needs Docker with `/dev/kvm`: Linux with KVM, or Docker on Windows with WSL2 and nested virtualization. The test
+package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is needed. Tags:
+
+| Tag | Contents |
+|-----|----------|
+| `26.5` | Base server, no data. |
+| `26.5-demo` | 100 tags (`demo.line<1..10>.sensor<001..100>`) and one file. No test results. |
+| `26.5-migration` | Workspaces, users, files, Test Monitor products, results and steps, a feed, assets, states and tags ([manifest](src/seeds/migration/manifest.json)). |
 
 Pull the image (~20 GB):
 
@@ -184,10 +190,12 @@ docker inspect -f "{{.State.Health.Status}}" sls
 services succeed. The module services (Test Monitor, assets, systems) can answer up to ~30 s later. If you need one
 of them, poll its API, for example Test Monitor.
 
-PowerShell (Windows PowerShell 5.1 or 7; `YWRtaW46dGVzdA==` is `admin:test` in base64):
+PowerShell (Windows PowerShell 5.1 or 7; `YWRtaW46dGVzdA==` is `admin:test` in base64). `-UserAgent` is required:
+the NI web server treats PowerShell's default `Mozilla/5.0 ...` user agent as a browser and answers with the login
+page (401/302) instead of checking basic auth.
 
 ```powershell
-while ($true) { try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/nitestmonitor/v2/query-results -ContentType application/json -Body '{"take":1}' -Headers @{ Authorization = 'Basic YWRtaW46dGVzdA==' } | Out-Null; break } catch { Start-Sleep -Seconds 5 } }
+while ($true) { try { Invoke-RestMethod -UserAgent sls-wait -Method Post -Uri http://127.0.0.1:8080/nitestmonitor/v2/query-results -ContentType application/json -Body '{"take":1}' -Headers @{ Authorization = 'Basic YWRtaW46dGVzdA==' } | Out-Null; break } catch { Start-Sleep -Seconds 5 } }
 ```
 
 bash:
