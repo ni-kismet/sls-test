@@ -68,9 +68,20 @@ function Save-InstallReports {
     & docker logs -t $c *> (Join-Path $Ctx.OutDir 'container-install.log')
 }
 
+function Save-StallScreen {
+    & docker exec $c sh -c 'echo "screendump /storage/sls-stall.ppm" | nc -q 1 -U /run/shm/monitor.sock' 2>&1 | Out-Null
+    & docker cp "${c}:/storage/sls-stall.ppm" (Join-Path $Ctx.OutDir 'sls-stall.ppm') 2>&1 | Out-Null
+}
+
+# Windows setup normally reaches the first guest status (Install-Sls.ps1 running) about 5 minutes after the installer
+# boots. On nested KVM it can freeze without a bugcheck; fail fast so the next attempt starts.
+$setupStallMinutes = 30
+$heartbeatMinutes = 10
+$bootAt = $null
 $deadline = (Get-Date).AddMinutes($Ctx.InstallTimeoutMinutes)
 $lastLine = ''
 $lastStatus = ''
+$lastLog = Get-Date
 $done = $null
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ((Get-Date) -lt $deadline) {
@@ -87,11 +98,21 @@ while ((Get-Date) -lt $deadline) {
     $s = Read-SlsSharedJson $c 'install/status.json'
     if ($s) {
         $line = "install: $($s.current) | " + (($s.steps.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value.status)" }) -join ' ')
-        if ($line -ne $lastStatus) { Write-SlsLog $line; $lastStatus = $line }
+        if ($line -ne $lastStatus) { Write-SlsLog $line; $lastStatus = $line; $lastLog = Get-Date }
     } else {
         # Still installing Windows: show dockur's progress messages.
         $log = "$(& docker logs --tail 1 $c 2>&1 | Select-Object -Last 1)".Trim()
-        if ($log -and $log -ne $lastLine) { Write-SlsLog "windows: $log"; $lastLine = $log }
+        if ($log -and $log -ne $lastLine) { Write-SlsLog "windows: $log"; $lastLine = $log; $lastLog = Get-Date }
+        if (-not $bootAt -and (& docker logs $c 2>&1 | Select-String -Quiet 'Booting Windows')) { $bootAt = Get-Date }
+        if ($bootAt -and ((Get-Date) - $bootAt).TotalMinutes -ge $setupStallMinutes) {
+            Save-StallScreen
+            Save-InstallReports
+            throw "Windows setup stalled: no guest status $setupStallMinutes minutes after the installer booted (last screen in sls-stall.ppm)"
+        }
+    }
+    if (((Get-Date) - $lastLog).TotalMinutes -ge $heartbeatMinutes) {
+        Write-SlsLog "install: still waiting after $([math]::Round($sw.Elapsed.TotalMinutes)) min ($(if ($s) { $s.current } else { 'Windows setup' }))"
+        $lastLog = Get-Date
     }
     Start-Sleep -Seconds 20
 }
