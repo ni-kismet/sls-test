@@ -358,8 +358,8 @@ Checklist:
 
 ### W5. Seed configurations (in `mraj-sls-container`, local commits)
 
-- [ ] W5.1 `configs/demo`: re-verify against the module image (`New-SlsConfigImage.ps1 -Name demo`).
-- [ ] W5.2 Confirm the APIs for the migration seed against the W4 image (request shapes, required fields):
+- [x] W5.1 `configs/demo`: re-verify against the module image (`New-SlsConfigImage.ps1 -Name demo`). `sls-server-mod:26.5-demo`: 8.1 min, layer 0.69 GB, verify healthy after 125 s. Found and fixed a seal bug on the way: Redis lost data written shortly before the seal (§10 W5).
+- [x] W5.2 Confirm the APIs for the migration seed against the W4 image (request shapes, required fields):
   - workspaces: `POST /niuser/v1/workspaces`
   - users: what "user data" the user service holds on SLS (local/Windows users vs. created users); seed what the API allows
   - files with workspace + metadata
@@ -367,7 +367,7 @@ Checklist:
   - feeds: `POST /nifeed/v1/feeds`, package upload to a feed
   - assets: `POST /niapm/v1/assets`, calibration history entries (operator)
   - system states: `POST /nisystemsstate/v1/states`
-- [ ] W5.3 `configs/migration/Seed.ps1` (same contract as `configs/demo/Seed.ps1`: create without `-Verify`, check with `-Verify`). Data, all names prefixed `mig-`:
+- [x] W5.3 `configs/migration/Seed.ps1` (same contract as `configs/demo/Seed.ps1`: create without `-Verify`, check with `-Verify`). Data, all names prefixed `mig-`:
   - **Workspaces**: `mig-ws-a`, `mig-ws-b`
   - **Files**: 4 files across both workspaces with custom properties; 2 are attached to test results
   - **Test Monitor**: 2 products (`MIG-PN-100`, `MIG-PN-200`) with properties; 12 results across both products and workspaces:
@@ -382,23 +382,23 @@ Checklist:
   - **Out-of-scope negative controls** (seeded so migration tests can assert they are *not* transferred): 5 tags `mig.tag.*` with values, 1 alarm instance `mig-alarm-1`, 1 UserData entry
   - **Not seeded**: systems (manual preparation; no managed systems in a container), roles and role mappings (manual preparation)
   - `-Verify` checks counts per resource and the relationships (result → product, result → steps, result → files, state → feed).
-- [ ] W5.4 Build `sls-server:26.5-migration` locally from the W4 image; verify a fresh container from it. Record layer size and time.
-- [ ] W5.5 Write a manifest `configs/migration/manifest.json` (names, counts and relationships) used by both `-Verify` and the Playwright suite, so expected values live in one place.
-- [ ] W5.6 Commit (no push).
+- [x] W5.4 Build `sls-server:26.5-migration` locally from the W4 image; verify a fresh container from it. Record layer size and time. `sls-server-mod:26.5-migration`: 11.7 min (healthy 232 s, seed 87 s, seal 111 s), layer 0.68 GB, verify healthy after 149 s with all seed data present.
+- [x] W5.5 Write a manifest `configs/migration/manifest.json` (names, counts and relationships) used by both `-Verify` and the Playwright suite, so expected values live in one place.
+- [x] W5.6 Commit (no push). `mraj-sls-container` `cb84410` (seed + manifest), `8fbcec5` (comma-split array parameters), `f166a4e` (seal saves Redis).
 
 ### W6. Tooling sync and leak guard in `sls-test`
 
-- [ ] W6.1 `scripts/Sync-SlsTooling.ps1 -Source C:\dev\azdo\mraj-sls-container` (created early in W4B.2; W6.1 re-syncs after W5):
+- [x] W6.1 `scripts/Sync-SlsTooling.ps1 -Source C:\dev\azdo\mraj-sls-container` (created early in W4B.2; W6.1 re-syncs after W5):
   - refuses a dirty source tree
   - mirrors `build/`, `image/`, `testkit/`, `configs/` into `sls/` and deletes removed files; never copies `out/`
   - writes `sls/SOURCE.md` (source repo, commit, date)
-- [ ] W6.2 `scripts/Test-NoSecret.ps1 -Path <dir> [-Secret <string[]>]`:
+- [x] W6.2 `scripts/Test-NoSecret.ps1 -Path <dir> [-Secret <string[]>]`:
   - default secrets: `$env:SLS_ADMIN_PASSWORD`, passwords found in `sls/out/builds/*/credentials.json`, decoded `SLS_LICENSE_FILE_B64`
   - scans text files and expanded `.zip` entries; on a hit prints only the file name, deletes the path, exits 1
-  - local test with a planted fake secret in a plain file and inside a zip
-- [ ] W6.3 `scripts/Push-SlsImage.ps1 -Image <ref> -Tag <tag[]>`: tags, pushes with up to 3 retries (backoff), prints and outputs `repo@sha256:…`.
-- [ ] W6.4 *Becomes `sls-collect-logs` in W6B.2.* `.github/actions/sls-upload-logs/action.yml`: stage the given paths with excludes (`credentials.json`, `oem/`, `ca-certificates.crt`, `*.qcow2`, `*.img`, `*.iso`, `.auth/`, license folder) → `Test-NoSecret.ps1` → `actions/upload-artifact` (`retention-days: 7`).
-- [ ] W6.5 Run the sync, commit `sls/` and the scripts, push.
+  - local test with a planted fake secret in a plain file and inside a zip (and a tgz; through `scripts/ci/Collect-SlsLogs.ps1`)
+- [x] W6.3 `scripts/Push-SlsImage.ps1 -Image <ref> -Tag <tag[]>`: tags, pushes with up to 3 retries (backoff), prints and outputs `repo@sha256:…`. Plus the package guard (§10 W6).
+- [x] W6.4 *Became `sls-collect-logs` (W6B.2); `sls-upload-logs` removed.* `.github/actions/sls-upload-logs/action.yml`: stage the given paths with excludes (`credentials.json`, `oem/`, `ca-certificates.crt`, `*.qcow2`, `*.img`, `*.iso`, `.auth/`, license folder) → `Test-NoSecret.ps1` → `actions/upload-artifact` (`retention-days: 7`).
+- [x] W6.5 Run the sync, commit `sls/` and the scripts, push (`83dea0d`, re-synced at every tooling commit since).
 
 ### W6B. Reusable actions: build an image, start a server
 
@@ -461,18 +461,18 @@ Crash during tests (after `sls-start-server` returned) is the reusable e2e workf
 unhealthy container, `sls-start-server` again with `replace: true` and rerun the tests once.
 
 Checklist:
-- [ ] W6B.1 `scripts/ci/host-facts.sh` (`runner.json`: CPU, hypervisor, `kvm_*`; summary line) and
+- [x] W6B.1 `scripts/ci/host-facts.sh` (`runner.json`: CPU, hypervisor, `kvm_*`; summary line) and
   `scripts/ci/host-prep.sh` (body of `sls-host-prep`); `sls-host-prep` and `soak.yml` use them.
-- [ ] W6B.2 `sls-collect-logs`: inputs `path` (lines), `container` (adds `docker logs` + `Save-SlsLogs`), `artifact`,
+- [x] W6B.2 `sls-collect-logs`: inputs `path` (lines), `container` (adds `docker logs` + `Save-SlsLogs`), `artifact`,
   `admin-password`, `retention-days` (7).
-- [ ] W6B.3 `scripts/ci/Build-SlsCi.ps1` + `sls-build-image` (base and seeded; `-OnBugcheck`, `-RejectCpu`; push
+- [x] W6B.3 `scripts/ci/Build-SlsCi.ps1` + `sls-build-image` (base and seeded; `-OnBugcheck`, `-RejectCpu`; push
   guard; summary).
-- [ ] W6B.4 `scripts/ci/Start-SlsCi.ps1` + `sls-start-server`; local check in WSL against `sls-server-mod:26.5`.
+- [x] W6B.4 `scripts/ci/Start-SlsCi.ps1` + `sls-start-server`; local check in WSL against `sls-server-mod:26.5`.
 - [ ] W6B.5 `.github/workflows/actions-test.yml` (`workflow_dispatch`): build base with `push: false` → start it with
   `pull: false` → coverage check; optional seeded build (`config`) on the same runner; optional push to a test
   package and a second job that starts it from the registry. Monitor with gh until green.
 - [ ] W6B.6 `soak.yml` and `soak-image.yml` use `sls-build-image`; smoke soak green.
-- [ ] W6B.7 README: how to use the actions here and from another repository (pin a tag; package access for that
+- [x] W6B.7 README: how to use the actions here and from another repository (pin a tag; package access for that
   repository).
 
 ### W7. Playwright suites (in `sls-test/e2e`, developed locally)
@@ -670,9 +670,14 @@ scripts/Test-NoSecret.ps1
 scripts/Push-SlsImage.ps1
 scripts/Invoke-SlsBuild.ps1                 build with retry/resume (W4B, reused by W8)
 scripts/Get-SoakSummary.ps1                 soak results → Markdown (W4B)
+scripts/ci/{host-facts,host-prep}.sh            shared by the actions (W6B)
+scripts/ci/{Build-SlsCi,Start-SlsCi,Collect-SlsLogs,Test-SlsActionsRun}.ps1
 .github/actions/sls-host-prep/action.yml
-.github/actions/sls-upload-logs/action.yml
+.github/actions/sls-build-image/action.yml     W6B
+.github/actions/sls-start-server/action.yml    W6B
+.github/actions/sls-collect-logs/action.yml    W6B (replaces sls-upload-logs)
 .github/workflows/probe.yml
+.github/workflows/actions-test.yml            W6B.5
 .github/workflows/soak-image.yml            W4B test image build (package sls-server-soak)
 .github/workflows/soak.yml                  W4B stability soak across runners
 .github/workflows/build-images.yml
@@ -696,13 +701,13 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Products and versions installed | ni-systemlink-server, -software-config-module, -test-module, -asset-module 26.5.1.49157-0+f5; NIPM 26.8.0.49285; Windows Server 2022 build 20348.587 (eval expires 2027-05-19) |
 | Base build time: WSL (4 vCPU) / GitHub | WSL `wsl-mod1` (4 cores / 12 GB VM): Install 26.4 min, Seal 11.8 min, Convert 0.5 min, Image 2.4 min, Verify 3.9 min = 45 min of stage time (`build.json` `stagesSec`; the build was resumed several times, so no single wall-clock run) / GitHub (`-Ram 10G -Cpu 4`, W4B): 45–47 min on Intel 6975P-C/KVM (Install 30.1, Seal 10.1, Convert 0.8, Image 2.3, Verify 2.7), 57–64 min on Intel Xeon 8370C/8573C, 51–58 min on EPYC 9V74, 64–99 min on EPYC 7763 (Hyper-V L0) |
 | Disk layer (`base.qcow2`) size, with modules | 9.23 GB (gate 9.5 GB); `data.img` allocated 20.35 GB after the seal |
-| Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB); 9.44 GB on the GitHub runner (W4B.7, containerd image store) / W5 / W5 |
+| Image size, base / demo / migration layers | `sls-server-mod:26.5` 19.40 GB (build log; `docker images` 20.8 GB); 9.44 GB on the GitHub runner (W4B.7, containerd image store) / demo layer 0.69 GB / migration layer 0.68 GB (W5, qcow2 overlays on the base) |
 | Boot to healthy, guest RAM used | 8 GB guest, 4 cores: healthy 121–150 s alone, 194–219 s with other VMs running; Test Monitor up to ~30 s later (coverage waits). With `SLS_ADMIN_PASSWORD` at start: 176–194 s (password set in ~135 s). RAM 8 min after boot: 4.8 GB used, 3.2 GB free, commit 7.0 of 9.9 GB → e2e default `ram` 8G. GitHub runners (W4B, 8 GB guest, one VM per runner): median healthy 150–281 s per runner, longest 561 s (Verify on a slow EPYC 7763) |
 | GitHub runner stability (W4B, `HV=N`) | Soak 46 jobs on 19 runners: 1 failure (not healthy, EPYC 7763), 0 bugchecks. Builds: 16 of 19 OK, 3 bugchecks in 26 attempts (EPYC 9V45 Seal ×2, EPYC 7763 Install ×1). `HV=Y`: 2 of 8 bugchecks (0x4A). WSL2 host: 8 of 20 |
 | Module licensing outcome (unlicensed / license file needed) | No license needed now: "Trial" (5 users / 10 systems), Test/Asset/Advanced evaluations run 45 days from the image build. After expiry the module UI pages are disabled ("not licensed"); APIs (queries and creates) keep working |
 | Coverage endpoints (resource → route → status) | workspaces `GET niuser/v1/workspaces` 200; users `POST niuser/v1/users/query` 200; files `GET nifile/v1/service-groups/Default/files` 200; Test Monitor `POST nitestmonitor/v2/query-products` / `query-results` / `query-steps` 503 at 130 s, 200 at 215 s; feeds `GET nirepo/v1/feeds` 200; assets `POST niapm/v1/query-assets` 200; states `GET nisystemsstate/v1/states` 200; systems `POST nisysmgmt/v1/query-systems` 200 |
 | Base push time | |
-| Seed job time (demo / migration) | |
+| Seed job time (demo / migration) | Local WSL (8 GB, 4 cores): demo 8.1 min, migration 11.7 min (boot 3–4 min, seed 4 s / 87 s, seal ~2 min, rebase, docker build, verify boot 2–2.5 min) |
 | e2e job time (pull / healthy / tests) | |
 | Actions minutes per full run | W4B soak (8 runners, build + 3×15-min jobs): 841–880 runner-min, wall clock up to 155 min; free for this public repo (standard runners) |
 
@@ -712,9 +717,9 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 
 | Risk | Mitigation |
 |------|------------|
-| Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it |
+| Disk layer with modules > GHCR 10 GB layer limit | Gate in the Image stage (W3.5); more seal cleanup; two-layer split (base + modules overlay qcow2). W4: 9.23 GB, only 0.27 GB under the gate; a module update could exceed it. The gate and the W4 figure are GiB (PowerShell `1GB`): 9.23 GiB ≈ 9.91e9 bytes; the first GitHub build (W6B.5) gave 9.88e9 bytes (9.20 GiB). If GHCR's 10 GB is decimal, the margin is only ~0.1 GB; the W4B.7 push of the same-size layer worked |
 | Windows guest bugchecks (stop 0x4A) or hangs on nested KVM | WSL2 engine on an AMD host (Hyper-V → KVM → Windows): with dockur's Hyper-V enlightenments 3/3 runtime runs crashed within 3–9 min; with `HV=N` (now the build and runtime default) about 2 in 5 fresh containers failed in a soak of 20 CI-like jobs (8 bugchecks/hangs, all within 11 min of the start, several during boot; idle and single VMs fail as often; `vls=0`, `npt=0`, `nrips=0`, memory locking, 2 vCPUs do not help). Likely Hyper-V's nested SVM emulation losing guest interrupt state (CR8/IRQL, trap flag); not fixable in the image or by `kvm_amd` settings. Detection: `hv-crash` + `panic=pause` + `sls-panic-watch` turn a bugcheck into an unhealthy container, `[sls] ... Windows bugcheck` in the log, and failing `Wait-SlsServer`/`sls-exec`; a hang only shows as unhealthy / timeouts. **This host is not usable for CI.** GitHub runners (W4B): at runtime 1 failure in 46 jobs and no bugcheck with `HV=N` (Intel on KVM or Hyper-V L0, AMD EPYC 9V74/7763 on Hyper-V); `HV=Y` brings the 0x4A back (2 of 8 on AMD). Builds are hit harder: 3 bugchecks in 26 attempts, all on AMD under Hyper-V (next row). Mitigation: keep `HV=N`; W9.1 retries once on a recorded guest crash or an unhealthy container; builds go through `Invoke-SlsBuild.ps1` (retries); if the rate rises, larger runners / self-hosted bare-metal KVM runners (no nesting) |
-| EPYC 9V45 (Turin) runners crash the build | 2 of 2 builds on 9V45 hosts bugchecked in Seal and did not recover on a Seal resume (W4B.9); no runtime data on that CPU (soak runners build their own image). GitHub can't pin a CPU model. Options for W8 (decide there): after a bugcheck in a later stage, retry from a fresh Install instead of resuming (worked for an EPYC 7763 Install bugcheck); or check `lscpu` first and fail the job early on 9V45 so a re-run lands elsewhere; record the CPU in the build summary either way. W9 should report the CPU of every crashed e2e job, to catch 9V45 runtime crashes |
+| EPYC 9V45 (Turin) runners crash the build | 2 of 2 builds on 9V45 hosts bugchecked in Seal and did not recover on a Seal resume (W4B.9); no runtime data on that CPU (soak runners build their own image). GitHub can't pin a CPU model. Options for W8 (decide there): after a bugcheck in a later stage, retry from a fresh Install instead of resuming (worked for an EPYC 7763 Install bugcheck); or check `lscpu` first and fail the job early on 9V45 so a re-run lands elsewhere; record the CPU in the build summary either way. W9 should report the CPU of every crashed e2e job, to catch 9V45 runtime crashes. **W6B:** `sls-build-image` restarts from a fresh Install after a bugcheck in any stage (`on-bugcheck: restart`, default), records the CPU (`host-cpu`, `runner.json`) and offers `reject-cpus` (empty by default) |
 | Slow runner hosts | EPYC 7763 hosts took up to 99 min to build, 561 s to healthy, and one never got Test Monitor past 503 within 300 s (3 Verify attempts; services went live 8 min late, RabbitMQ connect failures, AssetPerformanceManagement restarted 5 times). Verify now waits 600 s; W9 waits on Test Monitor before the tests with a generous timeout (≥ 10 min) |
 | A package published by `GITHUB_TOKEN` in this public repo is public | Happened in W4B.7 (deleted within 4 min). Create the `sls-server` package as Private before W8 pushes anything (§3); the soak workflows don't push by default |
 | Module services start after "healthy" | Test Monitor answers 503/504 for about 30 s after healthy; coverage checks and e2e tests wait for it (W4.1b; e2e: wait on a module API before the tests) |
@@ -935,3 +940,70 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
   `sls-test` access. Optionally rotate `SLS_ADMIN_PASSWORD`, which was in the public `sls-server-soak` image for about
   4 minutes. `soak.yml`, `soak-image.yml` and `package-delete.yml` stay for later re-checks (e.g. after a runner
   image or SystemLink change).
+
+**W5 (done), seed configurations; `mraj-sls-container` `cb84410`, `8fbcec5`, `f166a4e`, `1264f5a`**
+
+- Local results from `sls-server-mod:26.5` (WSL host): demo 8.1 min, layer 0.69 GB; migration 11.7 min (seed 87 s),
+  layer 0.68 GB. Fresh containers from both are healthy in 125–149 s with the seed data present.
+- **Seal bug found and fixed (`f166a4e`): Redis data written shortly before a seal was lost.** Redis (tag values and
+  metadata) runs as a child of the Service Manager, which kills it on stop without the shutdown save. Its save points
+  are 900 s / 1 change, 300 s / 10, 60 s / 10000, so data written in the last minutes before a seal only survived
+  when a snapshot happened by chance. The demo config failed its verify once ("No such tag"; the verify container
+  loaded the base build's 2-day-old RDB with 67 keys). Seal phase 2 now stops the web server, runs `redis-cli SAVE`
+  (password from the guest's Redis conf, through `REDISCLI_AUTH`), fails the seal if that fails, then stops the
+  rest. Checked: a container from the rebuilt demo image loads a 306 s old RDB with 278 keys. This also covers base
+  builds (same phase 2). `New-SlsConfigImage` now copies this checkout's `Seal-Vm.ps1` into the work container before
+  the seal, because the guest otherwise runs the base image's copy (`/opt/sls/guest`), so seal fixes reach seeds on
+  existing bases. The local `sls-server-mod:26.5-migration` was built before the fix (its verify passed).
+- **Seed bug found on the first GitHub run and fixed (`1264f5a`).** Test Monitor and asset bulk creates answer
+  **200** with a `failed` list instead of an HTTP error while a service doesn't know a new workspace yet
+  (`Skyline.UnknownWorkspace`; the asset service reports `UserDoesNotHaveCreatePrivilegeInWorkspace`, even for the
+  admin). On a slower runner the seed went on with no results / an empty asset id. `New-Bulk` throws with the server
+  error, so the workspace retry (180 s) applies.
+- W5.2 API findings used by the seed and useful for the migration tests:
+  - Products aren't workspace-scoped (`products` has no workspace); results are.
+  - New workspaces propagate asynchronously (above); every workspace-scoped create retries.
+  - Users: `POST niuser/v1/users` creates SystemLink users (login, names, email, keywords, properties; `niuaId` =
+    login, `acceptedToS`); `users/query` returns them. That is the "supported user data" seeded.
+  - Feeds: create is a job (`nirepo/v1/feeds` → `jobId`); finished `nirepo/v1/jobs/<id>` answers **303** with the
+    job in the body. Package: `nipkg pack` in the guest, `upload-packages` (multipart), `add-package-references`.
+    A state's feed URL is `http://localhost` + the feed's `directoryUri`.
+  - Asset calibration history: the first entry goes in the asset create (`externalCalibration`), later ones through
+    `assets/<id>/history/calibration`; the operator is `{displayName, userId}`.
+  - Out-of-scope controls: alarm `query-instances` needs `workspaces`; UserData create takes a top-level JSON array.
+  - `Invoke-SlsApi` disposes multipart content after a send, so a retry must rebuild it.
+- `pwsh -File` passes an array parameter as one comma-joined string (`-Packages a,b` → `'a,b'`). Scripts the CI calls
+  with `-File` split `-Packages`, `-Feeds`, `-ExtraTag`, `-LicenseFile` on commas (`8fbcec5`); in-process calls
+  (splatting) are unaffected.
+
+**W6 (done), sync, leak guard, push; `sls-test` `83dea0d`, `0474895`**
+
+- `Sync-SlsTooling.ps1` copies the committed tree (`git archive`), so `sls/SOURCE.md` names an exact commit.
+- `Test-NoSecret.ps1` is run through `scripts/ci/Collect-SlsLogs.ps1` (stage with excludes, then scan; on a hit the
+  staged copy is deleted and the step fails). Tested locally with a planted secret in a plain file, a zip and a tgz.
+  Screenshots (`*.ppm`) are kept, so bugcheck screens reach the artifact.
+- `Push-SlsImage.ps1` guard: reads the owner type (`/users/<owner>`), then the package
+  (`/{users|orgs}/<owner>/packages/container/<name>`). Tokens without package access get **404 for every package**
+  (the local gh token lacks `read:packages`), so a non-200 falls back to the registry: a ghcr token from the
+  credentials, then `/v2/<owner>/<name>/tags/list` (200 = exists, 404 `NAME_UNKNOWN` = missing). A missing package
+  needs `-AllowNewPackage`. After the push an anonymous pull token (200 = public) sets the `public` output.
+
+**W6B (actions), `sls-test` `ff81bca`, `cf92220`, `cb8db36`, `fc47da6`**
+
+- **Deviation from the design: `sls-start-server` sets the admin password at start** (`SLS_ADMIN_PASSWORD` →
+  the image's AdminCredential handling) instead of requiring the image's baked password. It works with any image and
+  the caller's secret is always the right one; the cost is about 40 s more to healthy (§7).
+- Scripts are called in-process (`shell: pwsh`, hashtable splatting) so `[int]`/`[bool]` parameters bind; children
+  that need their own `GITHUB_OUTPUT` (`Build-SlsCi` → `Invoke-SlsBuild` / `New-SlsConfigImage`) run with
+  `pwsh -File` and a redirected `GITHUB_OUTPUT`.
+- `Invoke-SlsBuild -OnBugcheck restart` (default): a bugcheck in any stage starts over from Install with a new build
+  id (`<id>-a<n>`), after cleaning up; `resume` keeps the W4B behavior. Answers the §8 EPYC 9V45 question for W8 in
+  favor of a fresh Install; `reject-cpus` stays available (empty by default).
+- Failed configuration attempts are kept as `configs/<name>-fail<n>` (disk deleted) and uploaded; the failure
+  message is rebuilt from pwsh's concise error block without ANSI colors.
+- Local checks (WSL engine): `Start-SlsCi` on `sls-server-mod:26.5` healthy in 296 s with all 10 coverage rows ok
+  (one VM on a loaded host); outputs, `GITHUB_ENV`, summary and the `replace: false` refusal work; `Collect-SlsLogs`
+  with a container collects docker log, guest logs and `state.json` with no leak; actionlint clean
+  (`rhysd/actionlint`).
+- The base disk layer on the first runner build was 9.88e9 bytes (9.20 GiB), the same as the W4 build (9.23 GiB; the
+  Image gate and W4 figures are GiB). In decimal GB that is close to GHCR's 10 GB layer limit (§8).
