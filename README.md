@@ -168,10 +168,10 @@ Pull the image (~20 GB):
 docker pull ghcr.io/rajsite/sls-server-actions-test:26.5-demo
 ```
 
-Start it:
+Start it (`SLS_HEALTH_AUTH` makes the healthcheck sign in, so `healthy` means the API is usable):
 
 ```bash
-docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 -e SLS_HEALTH_AUTH=admin:test ghcr.io/rajsite/sls-server-actions-test:26.5-demo
 ```
 
 Wait until the status goes from `starting` to `healthy` (~3-4 min), then open http://127.0.0.1:8080 and sign in as
@@ -179,6 +179,14 @@ admin / test:
 
 ```bash
 docker inspect -f '{{.State.Health.Status}}' sls
+```
+
+`healthy` means every NI service is running, the web server is up, and authenticated calls to the auth and tag
+services succeed. The module services (Test Monitor, assets, systems) can answer up to ~30 s later. If you need one
+of them, poll its API, for example Test Monitor:
+
+```bash
+until curl -sf -u admin:test -H 'Content-Type: application/json' -d '{"take":1}' http://127.0.0.1:8080/nitestmonitor/v2/query-results >/dev/null; do sleep 5; done
 ```
 
 Stop and remove it (the grace period lets Windows shut down):
@@ -196,6 +204,7 @@ With docker compose (keeps the data in a volume; `down -v` also deletes it):
 ```powershell
 $env:SLS_IMAGE = 'ghcr.io/rajsite/sls-server-actions-test:26.5-demo'
 $env:SLS_HTTP_PORT = '8080'
+$env:SLS_HEALTH_AUTH = 'admin:test'
 docker compose -f src/testkit/compose.yaml up -d --wait
 docker compose -f src/testkit/compose.yaml down -t 150
 ```
