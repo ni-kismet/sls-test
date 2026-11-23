@@ -1,0 +1,54 @@
+name: sls-collect-logs
+description: >
+  Upload logs from a SystemLink Server job of a public repository safely: stages the given paths without credentials,
+  OEM files, disks or license files, optionally adds a container's docker and guest logs, runs the leak guard
+  (scripts/Test-NoSecret.ps1) and uploads only when no secret was found.
+
+inputs:
+  path:
+    description: Files or folders to include, one per line (missing ones are skipped).
+    default: ''
+  container:
+    description: Optional container name; adds its docker log, state and guest log bundle (sls-logs).
+    default: ''
+  artifact:
+    description: Artifact name (must be unique in the run).
+    required: true
+  admin-password:
+    description: Password to check for besides the defaults of Test-NoSecret.ps1 (SLS_ADMIN_PASSWORD, ...).
+    default: ''
+  retention-days:
+    description: Artifact retention.
+    default: '7'
+
+outputs:
+  uploaded:
+    description: "'true' when the artifact was uploaded."
+    value: ${{ steps.upload.outcome == 'success' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Stage logs and check for secrets
+      id: stage
+      shell: pwsh
+      env:
+        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
+        LOG_PATHS: ${{ inputs.path }}
+        LOG_CONTAINER: ${{ inputs.container }}
+        EXTRA_SECRET: ${{ inputs.admin-password }}
+      run: |
+        if ($env:EXTRA_SECRET) { Write-Host "::add-mask::$env:EXTRA_SECRET" }
+        $out = Join-Path $env:RUNNER_TEMP "sls-collect-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        "dir=$out" | Add-Content $env:GITHUB_OUTPUT
+        & (Join-Path $env:SLS_TEST_ROOT 'scripts/ci/Collect-SlsLogs.ps1') -Out $out -Path $env:LOG_PATHS -Container $env:LOG_CONTAINER -Secret @($env:EXTRA_SECRET | Where-Object { $_ })
+
+    - name: Upload
+      id: upload
+      if: steps.stage.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ steps.stage.outputs.dir }}
+        if-no-files-found: ignore
+        retention-days: ${{ inputs.retention-days }}

@@ -1,0 +1,223 @@
+name: sls-build-image
+description: >
+  Build a SystemLink Server container image on a GitHub-hosted Ubuntu runner (nested KVM): the base image with
+  retries after build VM crashes, optionally a seeded configuration image on top, optionally push it to ghcr.io
+  (with a guard against creating a public package by accident). Writes a job summary and uploads leak-checked logs.
+
+inputs:
+  admin-password:
+    description: Web admin password baked into the image (pass a secret). Seeding and verification sign in with it.
+    required: true
+  config:
+    description: "'' = base image only; a name under sls/configs (demo, migration) = also build the seeded image."
+    default: ''
+  base-image:
+    description: Existing base image to seed instead of building one (pulled when not local). Requires config.
+    default: ''
+  repository:
+    description: Image repository of the base image (the seeded image gets tag <base tag>-<config>).
+    default: ghcr.io/${{ github.repository_owner }}/sls-server
+  sls-version:
+    description: SystemLink Server version (feed version and base image tag).
+    default: '26.5'
+  packages:
+    description: NI packages to install, comma or newline separated ('' = SystemLink Server + test, asset, software config modules).
+    default: ''
+  ram:
+    description: Build VM RAM (a hosted runner has 16 GB).
+    default: '10G'
+  cpu:
+    description: Build VM vCPUs.
+    default: '4'
+  tags:
+    description: Extra tags, one per line (the seeded image gets <tag>-<config>).
+    default: ''
+  max-attempts:
+    description: Build attempts for each image.
+    default: '3'
+  on-bugcheck:
+    description: After a build VM bugcheck past Install, 'restart' (fresh Install with a new build id) or 'resume' the stage.
+    default: restart
+  reject-cpus:
+    description: Extended regex of host CPU models to fail fast on (for example 'EPYC 9V45'); '' accepts any host.
+    default: ''
+  push:
+    description: Push the images built here to ghcr.io ('true'/'false').
+    default: 'false'
+  registry-token:
+    description: Token for ghcr.io (packages:write to push; packages:read to pull base-image).
+    default: ${{ github.token }}
+  allow-new-package:
+    description: >-
+      Allow the push to create the package. From a public repository's GITHUB_TOKEN a new package is PUBLIC, and the
+      image contains admin-password.
+    default: 'false'
+  license-b64:
+    description: Optional base64 user-based license file for the verify/seed containers (never part of the image).
+    default: ''
+  license-user:
+    description: Windows user the license file is issued to.
+    default: ''
+  host-prep:
+    description: Prepare the runner (free space, KVM check, registry login).
+    default: 'true'
+  min-free-gb:
+    description: Free GB required in the Docker data root.
+    default: '60'
+  upload-logs:
+    description: "'always', 'failure' or 'never'."
+    default: always
+  log-artifact:
+    description: Log artifact name ('' = sls-build-logs-<job>-<random>).
+    default: ''
+
+outputs:
+  image:
+    description: Built image (the seeded image when config is set, else the base image).
+    value: ${{ steps.build.outputs.image }}
+  tags:
+    description: Tags of image, comma separated.
+    value: ${{ steps.build.outputs.tags }}
+  base-image:
+    description: Base image (built or given).
+    value: ${{ steps.build.outputs.base_image }}
+  digest:
+    description: Registry digest of image (<repo>@sha256:...) when pushed.
+    value: ${{ steps.push.outputs.digest }}
+  public:
+    description: "'true' when the pushed package allows anonymous pulls."
+    value: ${{ steps.push.outputs.public }}
+  build-id:
+    description: Final base build id (sls/out/builds/<id>).
+    value: ${{ steps.build.outputs.build_id }}
+  attempts:
+    description: Base build attempts.
+    value: ${{ steps.build.outputs.attempts }}
+  bugchecks:
+    description: Build VM bugchecks (base + configuration image).
+    value: ${{ steps.build.outputs.bugchecks }}
+  config-attempts:
+    description: Configuration image attempts.
+    value: ${{ steps.build.outputs.config_attempts }}
+  host-cpu:
+    description: Host CPU model.
+    value: ${{ steps.facts.outputs.host-cpu }}
+  minutes:
+    description: Build minutes (base + configuration image, without push).
+    value: ${{ steps.build.outputs.minutes }}
+  versions:
+    description: Installed versions (JSON).
+    value: ${{ steps.build.outputs.versions }}
+
+runs:
+  using: composite
+  steps:
+    - name: Host facts
+      id: facts
+      shell: bash
+      env:
+        FACTS_DIR: ${{ github.action_path }}/../../../sls/out
+        RUNNER_ID: ${{ runner.name }}
+        REJECT_CPUS: ${{ inputs.reject-cpus }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-facts.sh"
+
+    - name: Host prep
+      if: inputs.host-prep == 'true'
+      id: prep
+      shell: bash
+      env:
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
+        REGISTRY_LOGIN: ${{ (inputs.push == 'true' || startsWith(inputs.base-image, 'ghcr.io/')) && 'true' || 'false' }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        REGISTRY_USER: ${{ github.actor }}
+        LICENSE_B64: ${{ inputs.license-b64 }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-prep.sh"
+
+    - name: Build
+      id: build
+      shell: pwsh
+      env:
+        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
+        SLS_BUILD_ADMIN_PASSWORD: ${{ inputs.admin-password }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_BASE_IMAGE: ${{ inputs.base-image }}
+        IN_REPOSITORY: ${{ inputs.repository }}
+        IN_SLS_VERSION: ${{ inputs.sls-version }}
+        IN_PACKAGES: ${{ inputs.packages }}
+        IN_RAM: ${{ inputs.ram }}
+        IN_CPU: ${{ inputs.cpu }}
+        IN_TAGS: ${{ inputs.tags }}
+        IN_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        IN_ON_BUGCHECK: ${{ inputs.on-bugcheck }}
+        IN_LICENSE_USER: ${{ inputs.license-user }}
+        IN_LICENSE_DIR: ${{ steps.prep.outputs.license-dir }}
+        BUILD_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      run: |
+        Write-Host "::add-mask::$env:SLS_BUILD_ADMIN_PASSWORD"
+        if ($env:IN_BASE_IMAGE -and -not $env:IN_CONFIG) { throw 'base-image needs config (the seeded image to build on it)' }
+        $p = @{
+          BuildId = ($env:BUILD_ID -replace '[^A-Za-z0-9_.-]', '-'); SlsVersion = $env:IN_SLS_VERSION; Packages = $env:IN_PACKAGES
+          Repository = $env:IN_REPOSITORY.ToLowerInvariant(); ExtraTag = $env:IN_TAGS; Ram = $env:IN_RAM; Cpu = [int]$env:IN_CPU
+          MaxAttempts = [int]$env:IN_MAX_ATTEMPTS; ConfigAttempts = [int]$env:IN_MAX_ATTEMPTS; OnBugcheck = $env:IN_ON_BUGCHECK
+          BaseImage = $env:IN_BASE_IMAGE; Config = $env:IN_CONFIG; LicenseUser = $env:IN_LICENSE_USER
+        }
+        if ($env:IN_LICENSE_DIR) { $p.LicenseFile = Join-Path $env:IN_LICENSE_DIR 'sls.lic' }
+        & (Join-Path $env:SLS_TEST_ROOT 'scripts/ci/Build-SlsCi.ps1') @p
+
+    - name: Push
+      id: push
+      if: inputs.push == 'true'
+      shell: pwsh
+      env:
+        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        ALLOW_NEW: ${{ inputs.allow-new-package }}
+        BASE_IMAGE_IN: ${{ inputs.base-image }}
+        BASE_IMAGE: ${{ steps.build.outputs.base_image }}
+        BASE_TAGS: ${{ steps.build.outputs.base_tags }}
+        CONFIG_IMAGE: ${{ steps.build.outputs.config_image }}
+        CONFIG_TAGS: ${{ steps.build.outputs.tags }}
+      run: |
+        $push = Join-Path $env:SLS_TEST_ROOT 'scripts/Push-SlsImage.ps1'
+        $final = $env:GITHUB_OUTPUT
+        $sets = @()
+        if (-not $env:BASE_IMAGE_IN) { $sets += , @($env:BASE_IMAGE, $env:BASE_TAGS) }
+        if ($env:CONFIG_IMAGE) { $sets += , @($env:CONFIG_IMAGE, $env:CONFIG_TAGS) }
+        $lines = @()
+        foreach ($s in $sets) {
+          # The last push (the seeded image when there is one) provides the step outputs.
+          $tmp = New-TemporaryFile; $env:GITHUB_OUTPUT = $tmp.FullName
+          try { & $push -Image $s[0] -Tag ($s[1] -split ',') -AllowNewPackage:($env:ALLOW_NEW -eq 'true') }
+          finally { $env:GITHUB_OUTPUT = $final }
+          $o = @{}; foreach ($l in Get-Content $tmp) { if ($l -match '^([\w-]+)=(.*)$') { $o[$matches[1]] = $matches[2] } }
+          $lines += "Pushed ``$($o.digest)`` ($($o.tags)) in $($o.push_sec) s$(if ($o.public -eq 'true') { ' - **package is PUBLIC**' })$(if ($o.new_package -eq 'true') { ' (new package)' })"
+        }
+        foreach ($k in 'digest', 'public') { "$k=$($o[$k])" | Add-Content $final }
+        $lines -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY
+
+    - name: Logs
+      id: logs
+      if: always() && (inputs.upload-logs == 'always' || (inputs.upload-logs == 'failure' && failure()))
+      shell: pwsh
+      env:
+        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
+        SLS_BUILD_ADMIN_PASSWORD: ${{ inputs.admin-password }}
+        ARTIFACT: ${{ inputs.log-artifact }}
+      run: |
+        $o = Join-Path $env:SLS_TEST_ROOT 'sls/out'
+        # builds/ and configs/ hold every attempt (failed configuration attempts as configs/<name>-fail<n>).
+        $paths = 'builds', 'configs', 'ci-build.json', 'runner.json' | ForEach-Object { Join-Path $o $_ }
+        $out = Join-Path $env:RUNNER_TEMP "sls-build-logs-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        $name = if ($env:ARTIFACT) { $env:ARTIFACT } else { "sls-build-logs-$env:GITHUB_JOB-$([guid]::NewGuid().ToString('N').Substring(0, 6))" }
+        "dir=$out" | Add-Content $env:GITHUB_OUTPUT
+        "name=$name" | Add-Content $env:GITHUB_OUTPUT
+        & (Join-Path $env:SLS_TEST_ROOT 'scripts/ci/Collect-SlsLogs.ps1') -Out $out -Path ($paths -join "`n")
+
+    - name: Upload logs
+      if: always() && steps.logs.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.logs.outputs.name }}
+        path: ${{ steps.logs.outputs.dir }}
+        if-no-files-found: ignore
+        retention-days: 7

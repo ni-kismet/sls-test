@@ -1,0 +1,134 @@
+name: sls-start-server
+description: >
+  Start a SystemLink Server container on a GitHub-hosted Ubuntu runner and wait until it is usable: pull, start,
+  wait for the healthcheck and (default) every migration-coverage API, start once more after a guest crash. Exports
+  SLS_BASE_URL and SLS_CONTAINER to later steps. On failure collect logs with sls-collect-logs (container: <name>).
+
+inputs:
+  image:
+    description: Image to start (for example ghcr.io/<owner>/sls-server:26.5-migration).
+    required: true
+  admin-password:
+    description: Web admin password, set at start (any value works; pass a secret).
+    required: true
+  pull:
+    description: Pull the image first ('false' = the image must be local, for example built in this job).
+    default: 'true'
+  registry-token:
+    description: Token for pulling from ghcr.io (packages:read).
+    default: ${{ github.token }}
+  name:
+    description: Container name.
+    default: sls
+  port:
+    description: Host port on 127.0.0.1 for the web server ('0' = any free port).
+    default: '8080'
+  ram:
+    description: Guest RAM.
+    default: '8G'
+  cpu:
+    description: Guest vCPUs.
+    default: '4'
+  wait-for:
+    description: "'services' (healthy + every migration-coverage API answers), 'healthy' or 'none'."
+    default: services
+  healthy-timeout-minutes:
+    description: Time allowed until healthy.
+    default: '15'
+  services-timeout-minutes:
+    description: Time allowed for services still starting after healthy.
+    default: '10'
+  crash-retries:
+    description: New containers after a Windows bugcheck or an exited container while starting.
+    default: '1'
+  replace:
+    description: Remove an existing container of the same name first ('true'/'false').
+    default: 'false'
+  license-b64:
+    description: Optional base64 user-based license file (mounted read-only, placed in the guest).
+    default: ''
+  license-user:
+    description: Windows user the license file is issued to.
+    default: ''
+  host-prep:
+    description: Prepare the runner (free space, KVM check, registry login).
+    default: 'true'
+  min-free-gb:
+    description: Free GB required in the Docker data root.
+    default: '40'
+
+outputs:
+  base-url:
+    description: http://127.0.0.1:<port>
+    value: ${{ steps.start.outputs.base-url }}
+  container:
+    description: Container name.
+    value: ${{ steps.start.outputs.container }}
+  pull-sec:
+    description: Seconds to pull.
+    value: ${{ steps.start.outputs.pull-sec }}
+  healthy-sec:
+    description: Seconds from docker run to healthy (last attempt).
+    value: ${{ steps.start.outputs.healthy-sec }}
+  ready-sec:
+    description: Seconds from docker run to ready (wait-for; last attempt).
+    value: ${{ steps.start.outputs.ready-sec }}
+  attempts:
+    description: Start attempts.
+    value: ${{ steps.start.outputs.attempts }}
+  crash:
+    description: Stop code of the last guest bugcheck ('' = none).
+    value: ${{ steps.start.outputs.crash }}
+  host-cpu:
+    description: Host CPU model.
+    value: ${{ steps.facts.outputs.host-cpu }}
+
+runs:
+  using: composite
+  steps:
+    - name: Host facts
+      id: facts
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-facts.sh"
+
+    - name: Host prep
+      if: inputs.host-prep == 'true'
+      id: prep
+      shell: bash
+      env:
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
+        REGISTRY_LOGIN: ${{ (inputs.pull == 'true' && startsWith(inputs.image, 'ghcr.io/') && inputs.registry-token != '') && 'true' || 'false' }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        REGISTRY_USER: ${{ github.actor }}
+        LICENSE_B64: ${{ inputs.license-b64 }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/ci/host-prep.sh"
+
+    - name: Start SystemLink Server
+      id: start
+      shell: pwsh
+      env:
+        SLS_TEST_ROOT: ${{ github.action_path }}/../../..
+        SLS_ADMIN_PASSWORD: ${{ inputs.admin-password }}
+        IN_IMAGE: ${{ inputs.image }}
+        IN_PULL: ${{ inputs.pull }}
+        IN_NAME: ${{ inputs.name }}
+        IN_PORT: ${{ inputs.port }}
+        IN_RAM: ${{ inputs.ram }}
+        IN_CPU: ${{ inputs.cpu }}
+        IN_WAIT_FOR: ${{ inputs.wait-for }}
+        IN_HEALTHY_MIN: ${{ inputs.healthy-timeout-minutes }}
+        IN_SERVICES_MIN: ${{ inputs.services-timeout-minutes }}
+        IN_CRASH_RETRIES: ${{ inputs.crash-retries }}
+        IN_REPLACE: ${{ inputs.replace }}
+        IN_LICENSE_USER: ${{ inputs.license-user }}
+        IN_LICENSE_DIR: ${{ steps.prep.outputs.license-dir }}
+      run: |
+        Write-Host "::add-mask::$env:SLS_ADMIN_PASSWORD"
+        $p = @{
+          Image = $env:IN_IMAGE; Name = $env:IN_NAME; Pull = $env:IN_PULL -eq 'true'; Replace = $env:IN_REPLACE -eq 'true'
+          Ram = $env:IN_RAM; Cpu = [int]$env:IN_CPU; HttpPort = [int]$env:IN_PORT; WaitFor = $env:IN_WAIT_FOR
+          TimeoutSec = [int]$env:IN_HEALTHY_MIN * 60; ServicesTimeoutSec = [int]$env:IN_SERVICES_MIN * 60
+          CrashRetries = [int]$env:IN_CRASH_RETRIES; LicenseUser = $env:IN_LICENSE_USER
+        }
+        if ($env:IN_LICENSE_DIR) { $p.LicenseFile = Join-Path $env:IN_LICENSE_DIR 'sls.lic' }
+        & (Join-Path $env:SLS_TEST_ROOT 'scripts/ci/Start-SlsCi.ps1') @p
