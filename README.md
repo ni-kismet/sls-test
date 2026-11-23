@@ -162,28 +162,42 @@ Needs Docker with `/dev/kvm`: Linux with KVM, or Docker Engine inside a WSL2 dis
 the commands there). The test package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is
 needed. Tags: `26.5` (base), `26.5-demo`, `26.5-migration`.
 
+Pull the image (~20 GB):
+
 ```bash
-docker pull ghcr.io/rajsite/sls-server-actions-test:26.5-demo      # ~20 GB
-docker run -d --name sls \
-  --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
-  --stop-timeout 150 -p 127.0.0.1:8080:80 \
-  ghcr.io/rajsite/sls-server-actions-test:26.5-demo
-docker inspect -f '{{.State.Health.Status}}' sls                   # starting -> healthy after ~3-4 min
-# open http://127.0.0.1:8080 and sign in as admin / test
-docker stop -t 150 sls && docker rm sls                             # the grace period lets Windows shut down
+docker pull ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+```
+
+Start it:
+
+```bash
+docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+```
+
+Wait until the status goes from `starting` to `healthy` (~3-4 min), then open http://127.0.0.1:8080 and sign in as
+admin / test:
+
+```bash
+docker inspect -f '{{.State.Health.Status}}' sls
+```
+
+Stop and remove it (the grace period lets Windows shut down):
+
+```bash
+docker stop -t 150 sls && docker rm sls
 ```
 
 - `-e SLS_ADMIN_PASSWORD=<pw>`: another web admin password, set at start (~40 s more).
 - `-e RAM_SIZE=8G -e CPU_CORES=4`: VM size (the defaults).
 - `-v sls-storage:/storage`: keep the data across containers; without it every container starts from the image.
 
-With docker compose (keeps the data in a volume):
+With docker compose (keeps the data in a volume; `down -v` also deletes it):
 
 ```powershell
 $env:SLS_IMAGE = 'ghcr.io/rajsite/sls-server-actions-test:26.5-demo'
 $env:SLS_HTTP_PORT = '8080'
 docker compose -f src/testkit/compose.yaml up -d --wait
-docker compose -f src/testkit/compose.yaml down -t 150             # -v also deletes the data volume
+docker compose -f src/testkit/compose.yaml down -t 150
 ```
 
 ## Local use and development
