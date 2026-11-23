@@ -111,6 +111,9 @@ du -sh /dst/data.qcow2
 
     # ------------------------------------------------------------ light seal
     $sw.Restart()
+    # This checkout's seal, not the base image's copy: the agent mirrors /shared/guest to C:\sls\guest before each
+    # command, so seal fixes reach configuration builds on an existing base image.
+    Invoke-SlsDocker cp (Join-Path $repo 'image\guest\Seal-Vm.ps1') "${work}:/shared/guest/Seal-Vm.ps1" | Out-Null
     $code = Invoke-SlsGuestScript -Container $work -Label 'seal' -TimeoutSec 1200 -OutFile (Join-Path $outDir 'seal.out.txt') `
         -Script "& 'C:\sls\guest\Seal-Vm.ps1' -Phase 1 -Light; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; & 'C:\sls\guest\Seal-Vm.ps1' -Phase 2 -NoRetrim; exit `$LASTEXITCODE"
     if ($code -ne 0) { Save-WorkLogs $work; throw "light seal failed (exit $code)" }

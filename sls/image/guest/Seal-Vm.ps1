@@ -179,15 +179,43 @@ if ($Phase -eq 1) {
 }
 
 # ---------------------------------------------------------------- phase 2
+function Stop-NiService([string]$Name) {
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) { "$Name missing"; return }
+    $t = Get-Date
+    Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
+    try { $svc.WaitForStatus('Stopped', [TimeSpan]::FromMinutes(3)) } catch { }
+    $svc.Refresh()
+    '{0} {1} after {2:N1}s' -f $Name, $svc.Status, ((Get-Date) - $t).TotalSeconds
+}
+# The web server first: no API writes after the Redis snapshot below.
+Step 'stop-web-server' { Stop-NiService 'NIWebServer' }
+Step 'save-redis' {
+    # Redis (tag values and metadata) runs under the Service Manager, which kills it on stop without the shutdown
+    # save; its save points (300 s / 10 changes) would lose data written in the last minutes before the seal.
+    $bin = 'C:\Program Files\National Instruments\Shared\Skyline\KeyValueDatabase\bin'
+    $conf = Join-Path $bin 'skyline.redis.windows-service.conf'
+    if (-not (Get-Process -Name redis-server -ErrorAction SilentlyContinue)) { 'redis-server not running'; return }
+    $lines = Get-Content $conf
+    $port = ($lines | Where-Object { $_ -match '^\s*port\s+(\d+)' } | Select-Object -First 1) -replace '^\s*port\s+(\d+).*', '$1'
+    if (-not $port) { $port = '6378' }
+    $pass = ($lines | Where-Object { $_ -match '^\s*requirepass\s+' } | Select-Object -First 1) -replace '^\s*requirepass\s+"?([^"]*)"?\s*$', '$1'
+    $t = Get-Date
+    # REDISCLI_AUTH keeps the password off the command line.
+    $env:REDISCLI_AUTH = $pass
+    try { $out = "$(& (Join-Path $bin 'redis-cli.exe') -h 127.0.0.1 -p $port --no-auth-warning SAVE 2>&1)".Trim() }
+    finally { Remove-Item Env:\REDISCLI_AUTH -ErrorAction SilentlyContinue }
+    if ($out -ne 'OK') { throw "redis SAVE failed: $out" }
+    $rdb = Get-Item 'C:\ProgramData\National Instruments\Skyline\KeyValueDatabase\dump.rdb'
+    'redis SAVE OK after {0:N1}s: dump.rdb {1} bytes' -f ((Get-Date) - $t).TotalSeconds, $rdb.Length
+}
+if ($Steps | Where-Object { $_.name -eq 'save-redis' -and $_.error }) {
+    Save-Report 'failed'
+    exit 1
+}
 Step 'stop-ni-services' {
-    foreach ($s in 'NIWebServer', 'NI Skyline Service Manager', 'NI SystemLink Message Bus', 'NiSvcLoc', 'NINetworkDiscovery') {
-        $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
-        if (-not $svc) { "$s missing"; continue }
-        $t = Get-Date
-        Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
-        try { $svc.WaitForStatus('Stopped', [TimeSpan]::FromMinutes(3)) } catch { }
-        $svc.Refresh()
-        '{0} {1} after {2:N1}s' -f $s, $svc.Status, ((Get-Date) - $t).TotalSeconds
+    foreach ($s in 'NI Skyline Service Manager', 'NI SystemLink Message Bus', 'NiSvcLoc', 'NINetworkDiscovery') {
+        Stop-NiService $s
     }
     # Module services (PostgreSQL, Salt master, asset/APM, ...): every other running service installed by NI.
     foreach ($w in @(Get-CimInstance Win32_Service -Filter "State='Running'" | Where-Object { $_.PathName -match '(?i)\\National Instruments\\' })) {
