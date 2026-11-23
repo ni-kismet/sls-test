@@ -156,6 +156,36 @@ The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-se
 - A first push with the `GITHUB_TOKEN` of a public repository creates a public package. The image contains the
   web admin password (`test` unless you set another).
 
+## Run a server locally
+
+Needs Docker with `/dev/kvm`: Linux with KVM, or Docker Engine inside a WSL2 distro with nested virtualization (run
+the commands there). The test package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is
+needed. Tags: `26.5` (base), `26.5-demo`, `26.5-migration`.
+
+```bash
+docker pull ghcr.io/rajsite/sls-server-actions-test:26.5-demo      # ~20 GB
+docker run -d --name sls \
+  --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
+  --stop-timeout 150 -p 127.0.0.1:8080:80 \
+  ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+docker inspect -f '{{.State.Health.Status}}' sls                   # starting -> healthy after ~3-4 min
+# open http://127.0.0.1:8080 and sign in as admin / test
+docker stop -t 150 sls && docker rm sls                             # the grace period lets Windows shut down
+```
+
+- `-e SLS_ADMIN_PASSWORD=<pw>`: another web admin password, set at start (~40 s more).
+- `-e RAM_SIZE=8G -e CPU_CORES=4`: VM size (the defaults).
+- `-v sls-storage:/storage`: keep the data across containers; without it every container starts from the image.
+
+With docker compose (keeps the data in a volume):
+
+```powershell
+$env:SLS_IMAGE = 'ghcr.io/rajsite/sls-server-actions-test:26.5-demo'
+$env:SLS_HTTP_PORT = '8080'
+docker compose -f src/testkit/compose.yaml up -d --wait
+docker compose -f src/testkit/compose.yaml down -t 150             # -v also deletes the data volume
+```
+
 ## Local use and development
 
 - Run an image locally with Docker Desktop (WSL2) or Linux with KVM, build images, use the PowerShell test kit:
