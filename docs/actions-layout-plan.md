@@ -102,7 +102,7 @@ README.md, LICENSE
     (coverage + the seed's `-Verify`), `sls-collect-logs`.
   - Reuse path ~25 min, rebuild path ~95 min. `concurrency` per event and ref, `cancel-in-progress`.
 - [x] L5.3 `build-images.yml`: `seed:` instead of `config:`, no password secret.
-- [ ] L5.4 Pin the runner label (`ubuntu-26.04`) once the workflows are green, so a future `ubuntu-latest` switch
+- [x] L5.4 Pin the runner label (`ubuntu-26.04`) once the workflows are green, so a future `ubuntu-latest` switch
   can't change disk layout, kernel or pwsh under the build.
 
 ### L6. Docs and release
@@ -116,7 +116,7 @@ README.md, LICENSE
 ### L7. Verification
 
 - [x] L7.1 Local: actionlint, parse check, shellcheck.
-- [ ] L7.2 `test.yml` reuse run (dispatch, ~25 min): seed from the existing base with password `test`, start from
+- [x] L7.2 `test.yml` reuse run (dispatch, ~25 min): seed from the existing base with password `test`, start from
   the registry, checks green.
 - [ ] L7.3 `test.yml` rebuild run (push, ~95 min): base with password `test`, unique dated tags.
 - [ ] L7.4 `build-images.yml` re-seed run against the test package: green, floating tags moved, unique seeded tags.
@@ -136,3 +136,12 @@ README.md, LICENSE
 - Custom seeds: `seed` is a built-in name or a path relative to the caller's workspace. The preflight checks that
   the file exists, parses, and has the `BaseUrl`/`Credential`/`Container`/`Verify` parameters before the build.
 - L7.1: actionlint, `Test-Syntax.ps1` (29 files, 3 seeds) and shellcheck (errors) clean locally.
+- L7.2: run 45237608624 green in ~20 min (plan 10 s, build 13.5 min, start 6 min). Seeded tag
+  `26.5.1-20261123-1824-test` is unique; start skipped the password change (label match); healthy after 201 s.
+- L7.3, first try (run 45237546963, cancelled): attempt 1 installed in 34 min, then bugchecked in seal phase 2
+  (nested KVM); attempt 2 froze in Windows setup with no bugcheck and only failed at the 150-minute Install limit;
+  attempt 3 was installing when the run was cancelled. Fix: Install fails after 30 minutes without guest status once
+  the installer has booted (normal is ~5 min), saves the screen as `sls-stall.ppm`, and logs a heartbeat every
+  10 minutes so a quiet log is not mistaken for a hang.
+- L5.4: `ubuntu-latest` already resolved to the `ubuntu-26.04` image, so the pin changes nothing today. The same
+  commit moves to `actions/checkout@v7`, `upload-artifact@v7` and `download-artifact@v8` (Node 20 deprecation).
