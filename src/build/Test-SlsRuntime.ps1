@@ -11,7 +11,7 @@ Three containers:
   password    SLS_ADMIN_PASSWORD (new random password) + SLS_LICENSE_USER + a dummy .lic on a persistent volume:
               new password works, the image password is rejected, license user/file in the guest; then docker stop/start:
               settings re-applied (password "unchanged"), readiness gated again on the second boot
-The image's own admin password comes from SLS_BUILD_ADMIN_PASSWORD or the build's credentials.json.
+The image's own admin password comes from SLS_BUILD_ADMIN_PASSWORD or the build's credentials.json, else 'test'.
 
 .EXAMPLE
 pwsh src/build/Test-SlsRuntime.ps1 -Image sls-server:26.5

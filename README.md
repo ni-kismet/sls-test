@@ -21,7 +21,7 @@ reachable only on `127.0.0.1` of the runner.
 ```yaml
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       packages: read
     steps:
@@ -46,7 +46,7 @@ SystemLink APIs ([docs/seeds.md](docs/seeds.md)); the seeded image starts with t
 ```yaml
 jobs:
   base:                                   # rarely: new SystemLink version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 340
     permissions:
       packages: write
@@ -56,7 +56,7 @@ jobs:
           push: 'true'                    # ghcr.io/<owner>/sls-server:26.5 and :<x.y.z>-<yyyyMMdd>-<HHmm>
 
   seed:                                   # whenever the seed changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       packages: write
@@ -145,8 +145,9 @@ The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-se
 
 ## Limits
 
-- GitHub-hosted Linux runners (nested KVM; 4 vCPU, 16 GB). Host preparation frees disk space until 60 GB (build)
-  or 40 GB (start) are free.
+- GitHub-hosted Linux runners (nested KVM; 4 vCPU, 16 GB), tested on `ubuntu-26.04`; pin the label so an image
+  switch of `ubuntu-latest` can't change kernel, disk layout or pwsh under you. Host preparation frees disk space until
+  60 GB (build) or 40 GB (start) are free.
 - Windows Server evaluation: about 180 days after the base build (label `com.ni.sls.windows-eval-expires`).
   SystemLink module evaluations end 45 days after the base build; after that their UI pages are disabled unless you
   pass a license file. Rebuild the base regularly.
