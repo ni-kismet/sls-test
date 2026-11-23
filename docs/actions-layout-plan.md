@@ -111,16 +111,16 @@ README.md, LICENSE
   advanced), custom seeds, local use, limits.
 - [x] L6.2 `docs/local.md` (compose, testkit, local builds); `docs/workflow-test-plan.md` → `docs/history/`.
 - [x] L6.3 `LICENSE` (MIT).
-- [ ] L6.4 Tag `v1.0.0` and the moving `v1` once green.
+- [x] L6.4 Tag `v1.0.0` and the moving `v1` once green.
 
 ### L7. Verification
 
 - [x] L7.1 Local: actionlint, parse check, shellcheck.
 - [x] L7.2 `test.yml` reuse run (dispatch, ~25 min): seed from the existing base with password `test`, start from
   the registry, checks green.
-- [ ] L7.3 `test.yml` rebuild run (push, ~95 min): base with password `test`, unique dated tags.
-- [ ] L7.4 `build-images.yml` re-seed run against the test package: green, floating tags moved, unique seeded tags.
-- [ ] L7.5 After pinning the runner label: `ci.yml` and `test.yml` (reuse) green.
+- [x] L7.3 `test.yml` rebuild run (push, ~95 min): base with password `test`, unique dated tags.
+- [x] L7.4 `build-images.yml` re-seed run against the test package: green, floating tags moved, unique seeded tags.
+- [x] L7.5 After pinning the runner label: `ci.yml` and `test.yml` (reuse) green.
 
 ## Status and notes
 
@@ -145,3 +145,13 @@ README.md, LICENSE
   10 minutes so a quiet log is not mistaken for a hang.
 - L5.4: `ubuntu-latest` already resolved to the `ubuntu-26.04` image, so the pin changes nothing today. The same
   commit moves to `actions/checkout@v7`, `upload-artifact@v7` and `download-artifact@v8` (Node 20 deprecation).
+- L7.3: run 45273185444 green on the first attempt: build 73 min (Install 37.8, Seal 14.1, Convert 1.2, Image 2.5,
+  Verify 4, then the test seed), start 9.5 min (healthy after 192 s, password change skipped by label). Base tag
+  `26.5.1-20261123-2243` and seeded tag `26.5.1-20261123-2247-test` are unique. The heartbeat lines appeared during
+  `install-sls`.
+- L7.4: run 45273574628 green in 16 min (re-seed of `:26.5`, demo and migration in parallel). Unique tags
+  `26.5.1-20261123-2154-<config>`; `26.5-<config>` and `26.5.1-<config>` moved to the new digests; the older
+  same-day `26.5.1-20261123-<config>` tags are untouched.
+- L7.5: `ci` and `test` green on `ubuntu-26.04`. actionlint does not know the label yet, so `.github/actionlint.yaml`
+  declares it.
+- L6.4: `v1.0.0` and the moving `v1` tag point at the commit that closes this plan.
