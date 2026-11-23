@@ -275,7 +275,7 @@ Checklist:
   `build/ image/ testkit/ configs/` into `sls/` (removed files disappear, `out/` is never copied), writes
   `sls/SOURCE.md` (source repo, commit, date). Run it; commit `sls/`. Synced `6ac7034` (30 files, all blobs identical
   to the source). `SOURCE.md` names the source repository but not its internal URL (this repo is public).
-- [x] W4B.3 `scripts/Invoke-SlsBuild.ps1` (reused by W8.4): runs `Build-SlsImage.ps1`; on a failure reads the failed
+- [x] W4B.3 `scripts/Invoke-SlsBuild.ps1` (reused by `sls-build-image`, W6B/W8): runs `Build-SlsImage.ps1`; on a failure reads the failed
   stage and message from `build.log`, then retries up to `-MaxAttempts` (3): Install → clean up and start over with a
   new build id (`<id>-a<n>`), later stages → stop the build container and resume `-From <stage>`. Writes
   `sls/out/builds/attempts-<id>.json` (stage, message, bugcheck yes/no per failure) and step outputs `attempts`,
@@ -537,11 +537,18 @@ pushed. The W4B soaks replace the old W8.7a.
   - `promote` (15 min; runs only when the base and every seed succeeded): `Publish-SlsImages.ps1`; artifact
     `images` (`images.json`, 90 days) for the e2e workflows (W9.2: `.configs.<name>.image`).
   - actionlint clean.
-- [ ] W8.4 Re-seed run against the test package (`repository: ghcr.io/rajsite/sls-server-actions-test`,
+- [x] W8.4 Re-seed run against the test package (`repository: ghcr.io/rajsite/sls-server-actions-test`,
   `base-image: …:26.5.1-20261123`, `configs: demo,migration`, `promote: true`): green; floating tags point at the
-  new digests.
-- [ ] W8.5 Full run against the test package (base build + both seeds + promote): green; `:26.5` not pushed by the
-  base job, moved by promote; timings in §7.
+  new digests. Run 45114475607 (after 45114382984 failed on a nested matrix list, fixed in `5afe4b7`): base resolve
+  11 s (tag → index `sha256:103801d4…`), seeds in parallel demo 13.3 min (EPYC 7763) and migration 11.1 min
+  (EPYC 9V45, no bugcheck), promote 16 s, whole run 14.1 min. Anonymous HEAD of every tag matched `images.json`:
+  `26.5`/`26.5.1` → base, `26.5[.1]-demo` → `sha256:3c080740…`, `26.5[.1]-migration` → `sha256:c20f24fb…`.
+- [x] W8.5 Full run against the test package (base build + both seeds + promote): green; `:26.5` not pushed by the
+  base job, moved by promote; timings in §7. Run 45115887283: base job 65.3 min (EPYC 7763, 1 attempt, stages
+  62.2 min, push 149 s of `26.5.1-20261123` and `r3` only), seeds in parallel on EPYC 9V74 demo 12.1 min / migration
+  13.3 min (healthy 153 s / 146 s in verify), promote 18 s; whole run 80.3 min. Every floating tag and `r3[-cfg]`
+  resolved anonymously to the digests in `images.json` (base `sha256:d8d4fb1c…`, demo `sha256:5e447fb9…`, migration
+  `sha256:ad76cce0…`). The same-day rebuild overwrote `26.5.1-20261123[-cfg]` (§10).
 - [ ] W8.6 First run against `ghcr.io/rajsite/sls-server` (**user decision**, §3): either create the package as
   Private first (push from a personal token, or flip visibility in the package settings right after the first run;
   then "Manage Actions access" → `sls-test` write), or accept a public package and dispatch with
@@ -560,7 +567,7 @@ pushed. The W4B soaks replace the old W8.7a.
     6. `if: always()`: `sls-upload-logs` with `playwright-report/`, `test-results/`, `results.xml` (artifact `e2e-<project>-report`)
     7. `if: failure()`: `Save-SlsLogs` + `docker logs` → `sls-upload-logs` (artifact `e2e-<project>-server-logs`)
     8. `if: always()`: `docker stop sls`
-  - Guest crash retry (nested-KVM risk, §8): if the container records a bugcheck (`/storage/sls-panic.txt`, `[sls] ... Windows bugcheck`) or turns unhealthy, remove it (`docker rm -f -v sls`) and start a fresh one once (steps 2–3, then the tests again); write the outcome (`guest crash: retried`, stop code from the log) to the job summary so the rate stays visible. Never retry plain test failures beyond Playwright's own `retries: 1`. The soak showed every crash within 11 min of the start, so the retry mostly covers start-up and the first tests. Keep it whatever W8.7a shows, since a runner host change can bring the crashes back.
+  - Guest crash retry (nested-KVM risk, §8): if the container records a bugcheck (`/storage/sls-panic.txt`, `[sls] ... Windows bugcheck`) or turns unhealthy, remove it (`docker rm -f -v sls`) and start a fresh one once (steps 2–3, then the tests again); write the outcome (`guest crash: retried`, stop code from the log) to the job summary so the rate stays visible. Never retry plain test failures beyond Playwright's own `retries: 1`. The soak showed every crash within 11 min of the start, so the retry mostly covers start-up and the first tests. Keep it whatever the W4B soaks show, since a runner host change can bring the crashes back.
 - [ ] W9.2 `e2e-demo.yml` and `e2e-migration.yml` (thin callers). Triggers:
   - `workflow_run: { workflows: [build-images], types: [completed] }`, job `if: conclusion == 'success'`; the image comes from the triggering run's `images` artifact (`actions/download-artifact` with `run-id` + `github-token`)
   - `workflow_dispatch` with input `image` (default `ghcr.io/rajsite/sls-server:26.5-demo` / `:26.5-migration`)
@@ -669,6 +676,7 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Seed job time (demo / migration) | Local WSL (8 GB, 4 cores): demo 8.1 min, migration 11.7 min (boot 3–4 min, seed 4 s / 87 s, seal ~2 min, rebase, docker build, verify boot 2–2.5 min). GitHub (EPYC 7763): migration 11.4 min on top of a 62.5-min base build; whole `sls-build-image` 73.8 min |
 | e2e job time (pull / healthy / tests) | Start only (W6B.5): local image on the build runner (EPYC 7763) healthy 210 s, services ready 230 s; from GHCR on a fresh runner (Xeon 8573C) pull 192 s, healthy 169.5 s, ready 182.5 s, start step 6.3 min, job 6.6 min. Tests: W7/W9 |
 | Actions minutes per full run | W4B soak (8 runners, build + 3×15-min jobs): 841–880 runner-min, wall clock up to 155 min; free for this public repo (standard runners) |
+| `build-images` run (W8) | Full (W8.5): 80.3 min wall clock, ~93 runner-min (base job 65.3 + seeds 12.4 / 14.7 + promote/matrix < 1). Re-seed from an existing base (W8.4): 14.1 min. Promote 16–18 s (registry manifest copies) |
 
 ---
 
@@ -686,7 +694,7 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 | Docker can't get ≥ 60 GB on the hosted runner | Probe: 87 GB free with no prep; `sls-host-prep` reclaims to 112 GB when needed (W0.5). The `/mnt` data root and LVM fallbacks remain for other runner images. Tune `-MinFreeGB` after measuring the real peak (W4) |
 | 16 GB host RAM with a 12 GB build VM plus more services | `-Ram 10G` for the build if the runner swaps or the OOM killer fires; consumer RAM 8G (W4.3: 4.8 GB used, 3.2 GB free) |
 | Build time on 4 vCPU with modules | Measured in W4.1; job timeout 300 min (hosted limit 6 h) |
-| Large-layer push to GHCR stalls | Push retries (W6.3); measured in W8.7 |
+| Large-layer push to GHCR stalls | Push retries (`Push-SlsImage`, 3 attempts). Measured: base 149–165 s, config layer 4–69 s (W6B.5, W8.5); one `denied` on the first push of a new package, recovered by the retry |
 | ≈8–10 GB pull in every e2e job | Accepted for the test; later: larger or self-hosted runners with a warm image cache |
 | A module service stops by design or starts late, delaying or blocking ready | Agent waits for NI automatic services with a 180 s grace after the core ones; laggards are logged in `ready.json` (W3.4) |
 | Linux path bugs beyond the known list | Full WSL build (W4) before any GitHub run |
@@ -699,6 +707,8 @@ e2e/tests/migration/{workspaces,testmonitor,assets,feeds,states,files,api,isolat
 ## 9. Follow-ups (out of scope)
 
 - Retention job for GHCR versions.
+- Make the dated tag unique per build (for example `<x.y.z>-<yyyyMMdd>-r<run>` or a time suffix), so a same-day
+  rebuild or re-seed does not overwrite it (§10, W8).
 - Larger or self-hosted runners with a warm image cache to cut the per-job pull.
 - A second source SLS version (e.g. an older release) to exercise migration from more than one source version.
 - Moving the tooling's source of truth to a public repo and consuming it as a submodule or release instead of a copy.
@@ -981,3 +991,29 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
   this repository's package).
 - W6B.6 smoke soak (run 45099504417) green: `sls-build-image` built in 1 attempt (Xeon 8370C, ~60 min), 1 × 5-min
   job healthy in 279 s, 45 iterations, 284 ops ok, 0 failed; artifacts keep no secrets.
+
+### W8 (slimmed build-images)
+
+- W8 was slimmed after W6B: the build internals already lived in `sls-build-image`, so W8 is one workflow
+  (`build-images.yml`) plus `Publish-SlsImages.ps1` and two small action changes (`floating-tag`; seeding a digest).
+  The second commit (`5afe4b7`, matrix fix) also carried the W8 plan rewrite.
+- **Pushed digests are OCI indexes**: the runner's containerd image store pushes an index, so reading labels from the
+  registry means picking the `linux/amd64` manifest, then its config blob. The Accept header must list the index
+  media types or GHCR answers `MANIFEST_UNKNOWN`.
+- Promote copies manifests through the registry API (GET by digest, PUT the same bytes and Content-Type by tag),
+  so it needs no Docker, no pull and no runner disk, and finishes in 16–18 s. Each tag is read back and its
+  `Docker-Content-Digest` compared.
+- `ConvertTo-Json -InputObject $list -AsArray` nests the list (`[["demo","migration"]]`); the first re-seed run
+  (45114382984) ran one seed job named after both configs and failed. Pipe the list in instead.
+- `Build-SlsCi` split the base reference at the last `:`, which for `repo@sha256:…` made the invalid tag
+  `repo@sha256-<config>`. A digest base now gets `<repo>:<x.y.z>-<yyyyMMdd>-<config>` from the base's labels.
+- W8.4 (run 45114475607) and W8.5 (run 45115887283) green; numbers in W8.4/W8.5 and §7. The base push in W8.5 left
+  `:26.5` out (`26.5.1-20261123`, `r3` only); promote moved it after both seeds passed.
+- **The `<x.y.z>-<yyyyMMdd>` tags are only unique per day**: W8.5 rebuilt the base on the day of the W6B.5 build and
+  overwrote `26.5.1-20261123` (and `-demo`/`-migration`); a re-seed (W8.4) overwrites the seeded date tags of its
+  base too. `r<run>[-<config>]` is unique within one workflow but not across workflows sharing a package (W8.4's
+  `r2-migration` replaced actions-test's). Consumers that need a fixed image use the digest from `images.json`.
+  Acceptable for manual dispatches into `sls-server`, which only `build-images` writes; a time or run suffix on the
+  dated tag is a follow-up (§9).
+- `ghcr.io/rajsite/sls-server` answers 403 to an anonymous token request (missing or private). Creating it and its
+  visibility is W8.6, a user decision; the agent tested only against `sls-server-actions-test`.
