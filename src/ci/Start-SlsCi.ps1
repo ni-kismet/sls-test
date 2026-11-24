@@ -19,7 +19,7 @@ GitHub step outputs: base-url, container, http-port, pull-sec, healthy-sec, read
 last bugcheck's stop code), log-dir. Exported to later steps (GITHUB_ENV): SLS_BASE_URL, SLS_CONTAINER, SLS_HTTP_PORT.
 
 .EXAMPLE
-pwsh src/ci/Start-SlsCi.ps1 -Image ghcr.io/rajsite/sls-server:26.5-migration -Name sls
+pwsh src/ci/Start-SlsCi.ps1 -Image ghcr.io/ni-kismet/sls-server:26.5-migration -Name sls
 #>
 param(
     [Parameter(Mandatory)][string]$Image,

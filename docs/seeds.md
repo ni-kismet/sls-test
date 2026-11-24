@@ -50,7 +50,7 @@ systems, feeds from [manifest.json](../src/seeds/migration/manifest.json)).
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: rajsite/sls-test/sls-build-image@v1
+- uses: ni-kismet/sls-test/sls-build-image@v1
   with:
     base-image: ghcr.io/<owner>/sls-server:26.5
     seed: test/sls/Seed.ps1       # relative to the workspace

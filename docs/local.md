@@ -11,7 +11,7 @@
 ## Run a server with docker compose
 
 ```powershell
-$env:SLS_IMAGE = 'ghcr.io/rajsite/sls-server:26.5-demo'
+$env:SLS_IMAGE = 'ghcr.io/ni-kismet/sls-server:26.5-demo'
 $env:SLS_HTTP_PORT = '8080'                        # default: any free port
 docker compose -f src/testkit/compose.yaml up -d --wait
 start http://127.0.0.1:8080                        # admin / test
@@ -30,7 +30,7 @@ SystemLink answers:
 
 ```powershell
 Import-Module ./src/testkit/SlsTestKit.psm1
-$s = Start-SlsServer -Image ghcr.io/rajsite/sls-server:26.5-demo   # admin / test
+$s = Start-SlsServer -Image ghcr.io/ni-kismet/sls-server:26.5-demo   # admin / test
 try {
     Invoke-SlsApi $s 'nitag/v2/tags?take=10'
     Wait-SlsCondition { (Invoke-SlsApi $s 'nitag/v2/tags/demo.line1.sensor001/values/current').value.value -eq '1.25' }

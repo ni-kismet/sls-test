@@ -5,7 +5,7 @@ SystemLink service needed by the automated migration feature.
 
 1. **build-images** (run manually) builds the SystemLink Server base image (server + Software Configuration, Test and
    Asset modules), then two seeded configuration images on top of it (`demo`, `migration`), and publishes all three to
-   private `ghcr.io/rajsite/sls-server`.
+   private `ghcr.io/ni-kismet/sls-server`.
 2. **e2e-demo** and **e2e-migration** (separate workflows) each pull one image, start it, and run a Playwright suite
    specific to that image.
 
@@ -17,14 +17,14 @@ Status legend: `[ ]` open, `[x]` done, `[~]` partial / deviates (see note).
 
 | # | Decision |
 |---|----------|
-| D1 | `rajsite/sls-test` is **public**; GHCR packages stay **private**. Publishing the tooling is approved (the end state is a public repo). |
+| D1 | `ni-kismet/sls-test` is **public**; GHCR packages stay **private**. Publishing the tooling is approved (the end state is a public repo). |
 | D2 | Runner: `ubuntu-latest` (public repo = 4 vCPU / 16 GB RAM, KVM available). Probe (W0.3): Ubuntu 26.04, one 150 GB disk with 88 GB free, no separate `/mnt` disk, pwsh 7.6. |
 | D3 | `build-images` runs **only via `workflow_dispatch`**. No schedule. |
 | D4 | One admin password for every image: repo secret `SLS_ADMIN_PASSWORD` → `SLS_BUILD_ADMIN_PASSWORD` at build. Consumers never reset it (no `SLS_ADMIN_PASSWORD` at run time). |
-| D5 | Source of truth for the tooling stays `C:\dev\azdo\mraj-sls-container` (commits there stay local, not pushed). It is copied into `sls-test/sls/` by a sync script that records the source commit. Pushing `rajsite/sls-test` is required to run the workflows. |
+| D5 | Source of truth for the tooling stays `C:\dev\azdo\mraj-sls-container` (commits there stay local, not pushed). It is copied into `sls-test/sls/` by a sync script that records the source commit. Pushing `ni-kismet/sls-test` is required to run the workflows. |
 | D6 | The base image installs **`ni-systemlink-server` + `ni-systemlink-software-config-module` + `ni-systemlink-test-module` + `ni-systemlink-asset-module`** (§2). Each comes from its own product feed; the build derives the feeds from the package names. |
 | D7 | Seeded configurations: **`demo`** (existing: 100 tags + 1 file) and **`migration`** (new: every resource marked *Automated migration* in §2, plus a few *Out of scope* items as negative controls). This replaces the earlier `alarms` idea. |
-| D8 | GHCR image name `ghcr.io/rajsite/sls-server` (user-scoped package, linked to the repo through the existing `org.opencontainers.image.source` label, which is derived from `git remote origin`). |
+| D8 | GHCR image name `ghcr.io/ni-kismet/sls-server` (user-scoped package, linked to the repo through the existing `org.opencontainers.image.source` label, which is derived from `git remote origin`). |
 | D9 | e2e jobs test the **exact digests** of the triggering build when started by `workflow_run`; manual runs take an image input (default: floating tag). |
 
 ---
@@ -49,7 +49,7 @@ e2e-demo.yml ──► _sls-e2e.yml                             e2e-migration.ym
                  sls-start-server → Playwright → sls-collect-logs (leak-guarded artifacts)
 ```
 
-Image tags (all in `ghcr.io/rajsite/sls-server`):
+Image tags (all in `ghcr.io/ni-kismet/sls-server`):
 
 | Tag | Written by | Mutable |
 |-----|-----------|---------|
@@ -140,7 +140,7 @@ Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, 
   - print `docker info` (storage driver, data root, cgroup)
   - run `docker run --rm --device /dev/kvm alpine:3 test -c /dev/kvm`
 - [x] W0.3 Push, run the probe, record results in §7. Gate: KVM usable in containers, ≥ 16 GB RAM, and `/mnt` plus freed `/` can give Docker ≥ 60 GB.
-  Passed ([run 44826141525](https://github.com/rajsite/sls-test/actions/runs/44826141525)): KVM and TUN usable in
+  Passed ([run 44826141525](https://github.com/ni-kismet/sls-test/actions/runs/44826141525)): KVM and TUN usable in
   containers, 15 GiB RAM (16 GB), 87 GB free for Docker with no prep. The runner image has changed since the plan was
   written: one 150 GB root disk, no `/mnt` temp disk.
 - [x] W0.4 `.github/actions/sls-host-prep/action.yml` (composite):
@@ -155,8 +155,8 @@ Baseline already checked: the `s2b` build logs (`build.log`, `container-*.log`, 
   - optional input `license-b64` → `$RUNNER_TEMP/sls-licenses/sls.lic` (folder 700, file 600), path exported as `SLS_LICENSE_DIR`
   - print a one-line host summary (CPU, RAM, Docker free GB), also to the job summary
 - [x] W0.5 Make the probe call `sls-host-prep`; check Docker free space after prep. Commit and push.
-  - [run 44826397722](https://github.com/rajsite/sls-test/actions/runs/44826397722) (`min-free-gb=60`): no reclaim, prep 2 s.
-  - [run 44826401824](https://github.com/rajsite/sls-test/actions/runs/44826401824) (`min-free-gb=100`): reclaim path,
+  - [run 44826397722](https://github.com/ni-kismet/sls-test/actions/runs/44826397722) (`min-free-gb=60`): no reclaim, prep 2 s.
+  - [run 44826401824](https://github.com/ni-kismet/sls-test/actions/runs/44826401824) (`min-free-gb=100`): reclaim path,
     87 → 112 GB free in 202 s. GHCR login, license staging (dummy value) and the `docker-free-gb` output verified.
 
 ### W1. Linux compatibility of the tooling (in `mraj-sls-container`, local commits)
@@ -215,7 +215,7 @@ to native commands such as `docker`. **Measured (pwsh 7.7 in WSL):** `Join-Path`
   `sls_full_version`, `disk_layer_bytes`, `out_dir` (base); `image`, `image_id`, `tags`, `layer_bytes`, `out_dir` (config).
   The Windows eval expiry is in `versions.json` (`eval.expiresUtc`) and in the `com.ni.sls.windows-eval-expires` image label.- [x] W2.3 `Build-SlsImage.ps1 -ExtraTag <string[]>` and `New-SlsConfigImage.ps1 -ExtraTag` so the immutable `-r<run>` tag is applied before push.
 - [x] W2.4 `New-SlsConfigImage.ps1 -LicenseFile <path[]>` (passes through to `Start-SlsServer -LicenseFile`) for seeding when modules need a license (§2).
-- [~] W2.5 Confirm the image labels in CI: `org.opencontainers.image.source` = `https://github.com/rajsite/sls-test`, `revision` = sls-test commit (from `Get-SlsGitInfo`, which runs `git` in the copied tree).
+- [~] W2.5 Confirm the image labels in CI: `org.opencontainers.image.source` = `https://github.com/ni-kismet/sls-test`, `revision` = sls-test commit (from `Get-SlsGitInfo`, which runs `git` in the copied tree).
   `Get-SlsGitInfo` now normalizes GitHub remotes (removes credentials and `.git`, converts SSH to `https://github.com/<owner>/<repo>`).
   This was checked with unit inputs; the label value itself is confirmed in the first CI run (W8).- [x] W2.6 Commit (no push). `mraj-sls-container` commit `1d020bc`.
 
@@ -263,7 +263,7 @@ Assumptions (made without user input, see §10 W4B):
 - The image is **built on a runner** and pushed with the workflow's `GITHUB_TOKEN` (`packages: write`). The local gh
   token has no `write:packages`, and the local image's source label is a WSL path, not this repo. The build also
   measures install/seal crashes on runners.
-- Test package `ghcr.io/rajsite/sls-server-soak` (separate from `sls-server`, deleted after W4B/W8).
+- Test package `ghcr.io/ni-kismet/sls-server-soak` (separate from `sls-server`, deleted after W4B/W8).
 - The image admin password is the existing `SLS_ADMIN_PASSWORD` secret (D4); no new secret.
 - Build VM `-Ram 10G -Cpu 4`: leaves about 5 GB for the host on a 16 GB runner (W4.3: 8 GB is enough at runtime).
 
@@ -289,7 +289,7 @@ Checklist:
 - [x] W4B.5 `.github/workflows/soak-image.yml` (`workflow_dispatch`; `permissions: contents read, packages write`;
   `timeout-minutes: 330`):
   1. checkout; host facts (`lscpu`, `kvm_*` parameters) into the job summary; `sls-host-prep` with `registry-login`
-  2. `Invoke-SlsBuild.ps1 -Repository ghcr.io/rajsite/sls-server-soak -BuildId gh-<run_id> -Ram 10G -Cpu 4
+  2. `Invoke-SlsBuild.ps1 -Repository ghcr.io/ni-kismet/sls-server-soak -BuildId gh-<run_id> -Ram 10G -Cpu 4
      -ExtraTag r<run_number>` with `SLS_BUILD_ADMIN_PASSWORD`
   3. push (input `push`, **default off**, see W4B.7) the immutable tag and `r<run_number>` (3 tries with backoff);
      job summary (stages, attempts, bugchecks, size, digest)
@@ -304,7 +304,7 @@ Checklist:
   upload `soak-all`). The soak job passes even when guests crash (the harness reports, it does not gate); a failed
   build or a missing `jobs.jsonl` fails it. Free-text inputs reach the shell only through `env:`.
 - [x] W4B.7 Push; dispatch `soak-image`; monitor with `gh run watch`; record stage times, attempts and bugchecks in §7;
-  check the package. [Run 1](https://github.com/rajsite/sls-test/actions/runs/44970907519): green on the first
+  check the package. [Run 1](https://github.com/ni-kismet/sls-test/actions/runs/44970907519): green on the first
   attempt, no bugcheck; host **Intel Xeon 6975P-C under KVM** (not Hyper-V; `kvm_intel` with `enable_apicv`, `vnmi`,
   shadow VMCS). Install 30.1, Seal 10.1, Convert 0.8, Image 2.3, Verify 2.7 min (46 min); disk layer 9.23 GB; image
   size 9.44 GB per `docker image inspect` (WSL reported 19.40 GB for the same content, probably because the runner's
@@ -316,13 +316,13 @@ Checklist:
   on each soak runner instead of pulling it (no registry; each build is also a 46-min stability sample). W8 needs a
   private package created first (§10 W4B).
 - [x] W4B.8 Smoke soak: `runners=1 jobs=1 minutes=5`; fix the workflow until it reports.
-  [Run 44975229679](https://github.com/rajsite/sls-test/actions/runs/44975229679): Intel 6975P-C/KVM, build 47 min,
+  [Run 44975229679](https://github.com/ni-kismet/sls-test/actions/runs/44975229679): Intel 6975P-C/KVM, build 47 min,
   1 job OK (healthy in 170 s, 43 workload iterations, 0 failed operations), summary and leak guard worked (55 min).
 - [x] W4B.9 Main soak: `runners=8 jobs=3 minutes=15` (24 jobs, 8 builds), twice if the first run is clean (different
   hosts/CPUs). Record per-CPU rates. Runs
-  [44975239854](https://github.com/rajsite/sls-test/actions/runs/44975239854) (only 2 Intel runners counted: 6 AMD
-  runners failed the host facts step, fixed), [44975647189](https://github.com/rajsite/sls-test/actions/runs/44975647189)
-  (841 runner-min, longest job 124 min) and [44983437121](https://github.com/rajsite/sls-test/actions/runs/44983437121)
+  [44975239854](https://github.com/ni-kismet/sls-test/actions/runs/44975239854) (only 2 Intel runners counted: 6 AMD
+  runners failed the host facts step, fixed), [44975647189](https://github.com/ni-kismet/sls-test/actions/runs/44975647189)
+  (841 runner-min, longest job 124 min) and [44983437121](https://github.com/ni-kismet/sls-test/actions/runs/44983437121)
   (880 runner-min, longest 155 min), plus the smoke run. **Soak: 46 jobs on 19 runners, 1 failure, no bugcheck**
   (an EPYC 7763 container not healthy after 900 s, VM running, before the harness collected guest logs). **Builds: 16
   of 19 succeeded; 3 bugchecks in 26 attempts, all on AMD under Hyper-V.** WSL for comparison: 8 of 20 jobs failed.
@@ -345,7 +345,7 @@ Checklist:
   reads `.tgz` (a Verify log archive went unscanned; checked, it held no secret); stop code OCR missed tesseract's
   `‘Stop code: …` (`c216896`).
 - [x] W4B.10 Variant for comparison: `lanes=ci:HV=Y` (WSL: 7/7 failed) on a smaller run, only if W4B.9 is clean
-  enough to make the comparison useful. [Run 44986128105](https://github.com/rajsite/sls-test/actions/runs/44986128105)
+  enough to make the comparison useful. [Run 44986128105](https://github.com/ni-kismet/sls-test/actions/runs/44986128105)
   (`runners=4 jobs=2 minutes=10`, 330 runner-min): builds 4 of 4 OK (with `HV=N`); **2 of 8 jobs bugchecked**, EPYC
   9V74 at 11.2 min and EPYC 7763 at 10.6 min, both `IRQL_GT_ZERO_AT_SYSTEM_SERVICE` (0x4A, read from the screenshots;
   the OCR fix above came from this run), the WSL failure. The same CPUs with `HV=N`: 0 bugchecks in 12 jobs. Keep
@@ -422,7 +422,7 @@ scripts/ci/
 
 Rules for the actions:
 - Tooling is found through `${{ github.action_path }}/../../..`, not the caller's workspace, so the actions work as
-  `./.github/actions/<name>` after checkout **and** as `rajsite/sls-test/.github/actions/<name>@<ref>` from another
+  `./.github/actions/<name>` after checkout **and** as `ni-kismet/sls-test/.github/actions/<name>@<ref>` from another
   repository without a checkout of `sls-test`. A local `uses: ./…` inside a composite resolves against the caller's
   workspace, so the actions share scripts, not nested local actions (only marketplace actions are nested).
 - Secrets arrive as inputs (composite actions can't read `secrets`), are masked at first use, reach only the env of
@@ -526,7 +526,7 @@ pushed. The W4B soaks replace the old W8.7a.
 - [x] W8.3 `.github/workflows/build-images.yml` (`workflow_dispatch` only, `concurrency: build-images`,
   `packages: write`). Inputs: `sls-version` (`26.5`), `packages` (`''` = D6), `configs` (`demo,migration`),
   `base-image` (`''`; a tag or digest in `repository` re-seeds an existing base without the 60–90 min base build),
-  `promote` (`true`), `repository` (`ghcr.io/rajsite/sls-server`), `allow-new-package` (`false`), `reject-cpus`.
+  `promote` (`true`), `repository` (`ghcr.io/ni-kismet/sls-server`), `allow-new-package` (`false`), `reject-cpus`.
   Jobs:
   - `matrix`: `configs` → JSON list (names checked).
   - `base` (340 min): `sls-build-image` with `push: true`, `floating-tag: false`, tag `r<run>`, artifact
@@ -537,7 +537,7 @@ pushed. The W4B soaks replace the old W8.7a.
   - `promote` (15 min; runs only when the base and every seed succeeded): `Publish-SlsImages.ps1`; artifact
     `images` (`images.json`, 90 days) for the e2e workflows (W9.2: `.configs.<name>.image`).
   - actionlint clean.
-- [x] W8.4 Re-seed run against the test package (`repository: ghcr.io/rajsite/sls-server-actions-test`,
+- [x] W8.4 Re-seed run against the test package (`repository: ghcr.io/ni-kismet/sls-server-actions-test`,
   `base-image: …:26.5.1-20261123`, `configs: demo,migration`, `promote: true`): green; floating tags point at the
   new digests. Run 45114475607 (after 45114382984 failed on a nested matrix list, fixed in `5afe4b7`): base resolve
   11 s (tag → index `sha256:103801d4…`), seeds in parallel demo 13.3 min (EPYC 7763) and migration 11.1 min
@@ -549,7 +549,7 @@ pushed. The W4B soaks replace the old W8.7a.
   13.3 min (healthy 153 s / 146 s in verify), promote 18 s; whole run 80.3 min. Every floating tag and `r3[-cfg]`
   resolved anonymously to the digests in `images.json` (base `sha256:d8d4fb1c…`, demo `sha256:5e447fb9…`, migration
   `sha256:ad76cce0…`). The same-day rebuild overwrote `26.5.1-20261123[-cfg]` (§10).
-- [ ] W8.6 First run against `ghcr.io/rajsite/sls-server` (**user decision**, §3): either create the package as
+- [ ] W8.6 First run against `ghcr.io/ni-kismet/sls-server` (**user decision**, §3): either create the package as
   Private first (push from a personal token, or flip visibility in the package settings right after the first run;
   then "Manage Actions access" → `sls-test` write), or accept a public package and dispatch with
   `allow-new-package: true`. Not dispatched by the agent.
@@ -570,7 +570,7 @@ pushed. The W4B soaks replace the old W8.7a.
   - Guest crash retry (nested-KVM risk, §8): if the container records a bugcheck (`/storage/sls-panic.txt`, `[sls] ... Windows bugcheck`) or turns unhealthy, remove it (`docker rm -f -v sls`) and start a fresh one once (steps 2–3, then the tests again); write the outcome (`guest crash: retried`, stop code from the log) to the job summary so the rate stays visible. Never retry plain test failures beyond Playwright's own `retries: 1`. The soak showed every crash within 11 min of the start, so the retry mostly covers start-up and the first tests. Keep it whatever the W4B soaks show, since a runner host change can bring the crashes back.
 - [ ] W9.2 `e2e-demo.yml` and `e2e-migration.yml` (thin callers). Triggers:
   - `workflow_run: { workflows: [build-images], types: [completed] }`, job `if: conclusion == 'success'`; the image comes from the triggering run's `images` artifact (`actions/download-artifact` with `run-id` + `github-token`)
-  - `workflow_dispatch` with input `image` (default `ghcr.io/rajsite/sls-server:26.5-demo` / `:26.5-migration`)
+  - `workflow_dispatch` with input `image` (default `ghcr.io/ni-kismet/sls-server:26.5-demo` / `:26.5-migration`)
   - `pull_request` on `e2e/**` and the workflow files, same-repo branches only, using the floating tag
 - [ ] W9.3 Dispatch each e2e workflow manually against the floating tags: green.
 - [ ] W9.4 Run `build-images` again (full) and confirm both e2e workflows start automatically and test the new digests.
@@ -599,7 +599,7 @@ name: e2e-migration
 on:
   workflow_run: { workflows: [build-images], types: [completed] }
   workflow_dispatch:
-    inputs: { image: { type: string, default: 'ghcr.io/rajsite/sls-server:26.5-migration' } }
+    inputs: { image: { type: string, default: 'ghcr.io/ni-kismet/sls-server:26.5-migration' } }
   pull_request:
     paths: ['e2e/**', 'sls/configs/migration/**', '.github/workflows/e2e-migration.yml', '.github/workflows/_sls-e2e.yml']
 jobs:
@@ -905,7 +905,7 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
 - **Cost and time.** Standard runners are free for this public repo; an 8-runner soak used 841–880 runner-minutes
   and took up to 2.6 h wall clock. Each build is 45–99 min depending on the host, so W8 (base + 2 seeds) will take
   about 1.5–2.5 h and W9 jobs will pull an ~8–10 GB image.
-- **Housekeeping before W8 (user):** create the `ghcr.io/rajsite/sls-server` package as Private (§3) and grant
+- **Housekeeping before W8 (user):** create the `ghcr.io/ni-kismet/sls-server` package as Private (§3) and grant
   `sls-test` access. Optionally rotate `SLS_ADMIN_PASSWORD`, which was in the public `sls-server-soak` image for about
   4 minutes. `soak.yml`, `soak-image.yml` and `package-delete.yml` stay for later re-checks (e.g. after a runner
   image or SystemLink change).
@@ -981,7 +981,7 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
   workspace propagates, so the seed went on with nothing created. `Seed.ps1` `New-Bulk` now throws on any failed
   item or a wrong count, inside the workspace retry (mraj-sls-container `1264f5a`, sls-test `20284c7`).
 - W6B.5 green (run 45099474477, `config=migration`, `push=true`): base built in 1 attempt on EPYC 7763 (62.5 min),
-  migration config in 1 attempt (11.4 min), pushed to the new public package `ghcr.io/rajsite/sls-server-actions-test`
+  migration config in 1 attempt (11.4 min), pushed to the new public package `ghcr.io/ni-kismet/sls-server-actions-test`
   (`26.5.1-20261123`, `26.5`, `r2`, `-migration` tags). Local-image start: healthy 210 s, ready 230 s. Registry start
   on a fresh Xeon 8573C runner: pull 192 s, healthy 169.5 s, ready 182.5 s. Both starts: all 10 coverage rows ok and
   `Seed.ps1 -Verify` found the seeded data. Log artifact scan: no secrets in 41 files.
@@ -1015,5 +1015,5 @@ container, volumes and disk layer tag itself; W4 diagnostics in `%TEMP%` were re
   `r2-migration` replaced actions-test's). Consumers that need a fixed image use the digest from `images.json`.
   Acceptable for manual dispatches into `sls-server`, which only `build-images` writes; a time or run suffix on the
   dated tag is a follow-up (§9).
-- `ghcr.io/rajsite/sls-server` answers 403 to an anonymous token request (missing or private). Creating it and its
+- `ghcr.io/ni-kismet/sls-server` answers 403 to an anonymous token request (missing or private). Creating it and its
   visibility is W8.6, a user decision; the agent tested only against `sls-server-actions-test`.

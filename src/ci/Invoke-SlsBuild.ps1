@@ -15,7 +15,7 @@ Arguments other than -BuildId and -MaxAttempts are passed to Build-SlsImage.ps1 
 takes them from the build's context.json).
 
 .EXAMPLE
-pwsh src/ci/Invoke-SlsBuild.ps1 -BuildId gh-123 -MaxAttempts 3 -Repository ghcr.io/rajsite/sls-server -Ram 10G -Cpu 4
+pwsh src/ci/Invoke-SlsBuild.ps1 -BuildId gh-123 -MaxAttempts 3 -Repository ghcr.io/ni-kismet/sls-server -Ram 10G -Cpu 4
 #>
 param(
     [Parameter(Mandatory)][string]$BuildId,

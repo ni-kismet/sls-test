@@ -21,7 +21,7 @@ base_tags, config_image, config_name, sls_full_version, build_id, attempts, bugc
 config_bugchecks, minutes, versions (JSON). Output folder: SLS_OUT, else src/out (ci-build.json, builds/, configs/).
 
 .EXAMPLE
-pwsh src/ci/Build-SlsCi.ps1 -BuildId gh-123 -Repository ghcr.io/rajsite/sls-server -Ram 10G -Cpu 4 -Seed migration
+pwsh src/ci/Build-SlsCi.ps1 -BuildId gh-123 -Repository ghcr.io/ni-kismet/sls-server -Ram 10G -Cpu 4 -Seed migration
 pwsh src/ci/Build-SlsCi.ps1 -BuildId gh-124 -BaseImage sls-server:26.5 -Seed tests/seed/Seed.ps1 -ConfigName test
 #>
 param(

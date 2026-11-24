@@ -11,7 +11,7 @@ The first push to a new package creates it; from a public repository's GITHUB_TO
 GitHub step outputs: digest (<repo>@sha256:...), tags (comma separated full references), public (true/false), push_sec.
 
 .EXAMPLE
-pwsh src/ci/Push-SlsImage.ps1 -Image ghcr.io/rajsite/sls-server:26.5 -Tag 26.5-r12
+pwsh src/ci/Push-SlsImage.ps1 -Image ghcr.io/ni-kismet/sls-server:26.5 -Tag 26.5-r12
 #>
 param(
     [Parameter(Mandatory)][string]$Image,

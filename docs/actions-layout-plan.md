@@ -1,7 +1,7 @@
 # Actions layout plan
 
 Goal: make this repository look and work like a normal GitHub Actions repository. Actions sit in top-level folders
-so other repositories can use them as `uses: rajsite/sls-test/sls-build-image@v1`, the implementation lives in
+so other repositories can use them as `uses: ni-kismet/sls-test/sls-build-image@v1`, the implementation lives in
 `src/`, workflows only test the actions (plus the manual image publish), the admin password is a plain default,
 and custom seeds are supported. The repository is not renamed.
 
@@ -95,7 +95,7 @@ README.md, LICENSE
 - [x] L5.2 `test.yml`:
   - `plan` job (seconds): runs `tests/Test-Syntax.ps1` (parse + seed contract), then decides `rebuild` when the push/PR changes files that end up in the base image
     (`src/build/**`, `src/image/**` except `config.Dockerfile`), when dispatched with `base: rebuild`, or when the
-    reuse base is missing; otherwise reuses `ghcr.io/rajsite/sls-server-actions-test:26.5`.
+    reuse base is missing; otherwise reuses `ghcr.io/ni-kismet/sls-server-actions-test:26.5`.
   - `build` job: `sls-build-image` with `seed: tests/seed/Seed.ps1`, push to the test package (`r<run>` tags; the
     floating base tag only from `main`). Preflight (inputs, seed, KVM, disk) fails in seconds.
   - `start` job (fresh runner): `sls-start-server` from the registry by digest, `tests/Test-SlsActionsRun.ps1`

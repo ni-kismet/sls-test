@@ -26,13 +26,13 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v7
-      - uses: rajsite/sls-test/sls-start-server@v1
+      - uses: ni-kismet/sls-test/sls-start-server@v1
         with:
           image: ghcr.io/<owner>/sls-server:26.5-mydata
       # SLS_BASE_URL=http://127.0.0.1:8080 and SLS_CONTAINER=sls are set; sign in as admin / test.
       - run: npm test
       - if: failure()
-        uses: rajsite/sls-test/sls-collect-logs@v1
+        uses: ni-kismet/sls-test/sls-collect-logs@v1
         with:
           container: sls
           artifact: sls-logs
@@ -51,7 +51,7 @@ jobs:
     permissions:
       packages: write
     steps:
-      - uses: rajsite/sls-test/sls-build-image@v1
+      - uses: ni-kismet/sls-test/sls-build-image@v1
         with:
           push: 'true'                    # ghcr.io/<owner>/sls-server:26.5 and :<x.y.z>-<yyyyMMdd>-<HHmm>
 
@@ -62,7 +62,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: rajsite/sls-test/sls-build-image@v1
+      - uses: ni-kismet/sls-test/sls-build-image@v1
         with:
           base-image: ghcr.io/<owner>/sls-server:26.5
           seed: test/sls/Seed.ps1         # your script; or a built-in seed: demo, migration
@@ -140,7 +140,7 @@ uploads only when none is found.
 Images carry labels: `org.opencontainers.image.version`, `com.ni.sls.products`, `com.ni.sls.windows-eval-expires`,
 `com.ni.sls.admin-password` (`test` or `custom`, never the value).
 
-The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-server` (`26.5`, `26.5-demo`,
+The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-server` (`26.5`, `26.5-demo`,
 `26.5-migration`). The package is private; build your own with `sls-build-image` or ask for access.
 
 ## Limits
@@ -159,7 +159,7 @@ The `build-images` workflow of this repository publishes `ghcr.io/rajsite/sls-se
 ## Run a server locally
 
 Needs Docker with `/dev/kvm`: Linux with KVM, or Docker on Windows with WSL2 and nested virtualization. The test
-package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login` is needed. Tags:
+package `ghcr.io/ni-kismet/sls-server-actions-test` is public, so no `docker login` is needed. Tags:
 
 | Tag | Contents |
 |-----|----------|
@@ -170,13 +170,13 @@ package `ghcr.io/rajsite/sls-server-actions-test` is public, so no `docker login
 Pull the image (~20 GB):
 
 ```bash
-docker pull ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+docker pull ghcr.io/ni-kismet/sls-server-actions-test:26.5-demo
 ```
 
 Start it (`SLS_HEALTH_AUTH` makes the healthcheck sign in, so `healthy` means the API is usable):
 
 ```bash
-docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 -e SLS_HEALTH_AUTH=admin:test ghcr.io/rajsite/sls-server-actions-test:26.5-demo
+docker run -d --name sls --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN --stop-timeout 150 -p 127.0.0.1:8080:80 -e SLS_HEALTH_AUTH=admin:test ghcr.io/ni-kismet/sls-server-actions-test:26.5-demo
 ```
 
 The `docker` commands work the same in bash, PowerShell and cmd. Wait until the status goes from `starting` to
@@ -218,7 +218,7 @@ docker rm sls
 With docker compose (keeps the data in a volume; `down -v` also deletes it):
 
 ```powershell
-$env:SLS_IMAGE = 'ghcr.io/rajsite/sls-server-actions-test:26.5-demo'
+$env:SLS_IMAGE = 'ghcr.io/ni-kismet/sls-server-actions-test:26.5-demo'
 $env:SLS_HTTP_PORT = '8080'
 $env:SLS_HEALTH_AUTH = 'admin:test'
 docker compose -f src/testkit/compose.yaml up -d --wait

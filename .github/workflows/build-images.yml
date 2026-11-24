@@ -29,7 +29,7 @@ on:
         default: true
       repository:
         description: Image repository
-        default: ghcr.io/rajsite/sls-server
+        default: ghcr.io/ni-kismet/sls-server
       reject-cpus:
         description: Host CPU models to fail fast on (extended regex)
         default: ''

@@ -5,7 +5,7 @@ Example integration test against a SystemLink Server container: start, wait heal
 not sleeping), run a command in the guest, save logs on failure, remove the container.
 
 .EXAMPLE
-pwsh src/testkit/examples/Test-SlsServer.ps1 -Image ghcr.io/rajsite/sls-server:26.5-demo
+pwsh src/testkit/examples/Test-SlsServer.ps1 -Image ghcr.io/ni-kismet/sls-server:26.5-demo
 .EXAMPLE
 pwsh src/testkit/examples/Test-SlsServer.ps1 -Image sls-server:26.5-demo -AdminPassword (Read-Host -AsSecureString) -SetPassword
 #>

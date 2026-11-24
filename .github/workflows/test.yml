@@ -30,8 +30,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REPOSITORY: ghcr.io/rajsite/sls-server-actions-test
-  REUSE_BASE: ghcr.io/rajsite/sls-server-actions-test:26.5
+  REPOSITORY: ghcr.io/ni-kismet/sls-server-actions-test
+  REUSE_BASE: ghcr.io/ni-kismet/sls-server-actions-test:26.5
 
 jobs:
   plan:
@@ -76,7 +76,7 @@ jobs:
           if (-not $rebuild) {
             $name = ($env:REUSE_BASE -replace '^ghcr\.io/', '') -replace ':.*$', ''
             $tag = $env:REUSE_BASE -replace '^.*:', ''
-            $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("rajsite:$env:TOKEN"))
+            $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$(($name -split '/')[0]):$env:TOKEN"))
             $bearer = (Invoke-RestMethod "https://ghcr.io/token?scope=repository:${name}:pull" -Headers @{ Authorization = "Basic $basic" }).token
             $accept = 'application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
             $r = Invoke-WebRequest "https://ghcr.io/v2/$name/manifests/$tag" -Method Head -SkipHttpErrorCheck -Headers @{ Authorization = "Bearer $bearer"; Accept = $accept }

@@ -14,7 +14,7 @@ inputs:
     description: Name of the seeded configuration (tag suffix; default the built-in name or the seed's folder name).
     default: ''
   base-image:
-    description: Existing base image to seed instead of building one (for example ghcr.io/rajsite/sls-server:26.5). Needs seed.
+    description: Existing base image to seed instead of building one (for example ghcr.io/ni-kismet/sls-server:26.5). Needs seed.
     default: ''
   repository:
     description: Repository of the images built here.
