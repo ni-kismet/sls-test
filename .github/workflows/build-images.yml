@@ -1,14 +1,20 @@
 name: build-images
 
-# Builds the SystemLink Server images and publishes them to ghcr.io. Manual dispatch only.
+# Builds the SystemLink Server images and publishes them to ghcr.io. Weekly (a fresh base, so the 45-day module
+# evaluation never lapses, plus demo and migration, promoted) and by manual dispatch.
 #   base     sls-build-image: base image, pushed with its immutable tags only (<x.y.z>-<yyyyMMdd-HHmm>, r<run>); or, with
 #            the base-image input, an existing base resolved to its digest (re-seed without a 60-90 min base build)
 #   seed     one job per configuration (parallel, fresh runners): sls-build-image seeds the base digest, pushes
 #            <x.y.z>-<yyyyMMdd-HHmm>-<config> and r<run>-<config>, records its digest (artifact image-<config>)
-#   promote  after every image of the run is pushed: images.json (artifact images), job
+#   smoke    one job per seeded image (the base when there is none), fresh runners: sls-start-server pulls it by digest,
+#            then the service coverage and the seed's -Verify
+#   promote  after every image of the run passed smoke: images.json (artifact images), job
 #            summary, and with promote the floating tags <sls-version>[-<config>] and <x.y.z>[-<config>]
+# A failed job leaves the floating tags where they were; re-run the failed jobs to promote.
 
 on:
+  schedule:
+    - cron: '23 7 * * 1'
   workflow_dispatch:
     inputs:
       sls-version:
@@ -40,15 +46,19 @@ permissions:
 
 concurrency: build-images
 
+# A scheduled run has no inputs; these are the dispatch defaults.
 env:
-  REPOSITORY: ${{ inputs.repository }}
-  SLS_VERSION: ${{ inputs.sls-version }}
+  REPOSITORY: ${{ inputs.repository || 'ghcr.io/ni-kismet/sls-server' }}
+  SLS_VERSION: ${{ inputs.sls-version || '26.5' }}
+  CONFIGS: ${{ github.event_name == 'schedule' && 'demo,migration' || inputs.configs }}
+  PROMOTE: ${{ github.event_name == 'schedule' || inputs.promote }}
 
 jobs:
   matrix:
     runs-on: ubuntu-26.04
     outputs:
       configs: ${{ steps.m.outputs.configs }}
+      smoke: ${{ steps.m.outputs.smoke }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,14 +66,14 @@ jobs:
 
       - id: m
         shell: pwsh
-        env:
-          CONFIGS: ${{ inputs.configs }}
         run: |
           $c = @($env:CONFIGS -split '[,\s]+' | Where-Object { $_ })
           foreach ($n in $c) { if (-not (Test-Path "src/seeds/$n/Seed.ps1")) { throw "no built-in seed '$n' (src/seeds/<name>/Seed.ps1)" } }
           $json = if ($c.Count) { $c | ConvertTo-Json -AsArray -Compress } else { '[]' }
-          Write-Host "configs=$json"
-          "configs=$json" | Add-Content $env:GITHUB_OUTPUT
+          # Each seeded image contains the base, so the base is smoke-tested on its own only when nothing is seeded.
+          $smoke = if ($c.Count) { $json } else { '["base"]' }
+          Write-Host "configs=$json smoke=$smoke (event $env:GITHUB_EVENT_NAME, promote $env:PROMOTE, $env:REPOSITORY)"
+          "configs=$json", "smoke=$smoke" | Add-Content $env:GITHUB_OUTPUT
 
   base:
     runs-on: ubuntu-26.04
@@ -164,12 +174,64 @@ jobs:
           path: ${{ runner.temp }}/image/image-${{ matrix.config }}.json
           retention-days: 7
 
-  promote:
+  smoke:
     needs: [matrix, base, seed]
     # Runs when the base and every seeded image are pushed (seed is skipped when configs is empty).
     if: >-
       !cancelled() && needs.base.result == 'success' &&
       (needs.seed.result == 'success' || (needs.seed.result == 'skipped' && needs.matrix.outputs.configs == '[]'))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.matrix.outputs.smoke) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        if: matrix.image != 'base'
+        with:
+          name: image-${{ matrix.image }}
+          path: ${{ runner.temp }}/image
+
+      - name: Image
+        id: image
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.image }}
+          BASE: ${{ needs.base.outputs.image }}
+        run: |
+          $image = if ($env:NAME -eq 'base') { $env:BASE } else { (Get-Content "$env:RUNNER_TEMP/image/image-$env:NAME.json" -Raw | ConvertFrom-Json).image }
+          if ($image -notmatch '@sha256:[0-9a-f]{64}$') { throw "no digest for ${env:NAME}: '$image'" }
+          $seed = if ($env:NAME -ne 'base') { "src/seeds/$env:NAME/Seed.ps1" } else { '' }
+          Write-Host "smoke ${env:NAME}: $image"
+          "image=$image", "seed=$seed" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Start
+        id: start
+        uses: ./sls-start-server
+        with:
+          image: ${{ steps.image.outputs.image }}
+
+      - name: Check
+        shell: pwsh
+        env:
+          START_OUT: ${{ toJSON(steps.start.outputs) }}
+          SEED: ${{ steps.image.outputs.seed }}
+        run: ./tests/Test-SlsActionsRun.ps1
+
+      - name: Logs
+        if: failure() && steps.start.outcome != 'skipped'
+        uses: ./sls-collect-logs
+        with:
+          container: sls
+          artifact: smoke-${{ matrix.image }}-logs
+
+  promote:
+    needs: [matrix, base, seed, smoke]
+    # Runs only when every image of the run passed smoke.
+    if: ${{ !cancelled() && needs.smoke.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
@@ -189,7 +251,6 @@ jobs:
           REGISTRY_TOKEN: ${{ github.token }}
           BASE: ${{ needs.base.outputs.image }}
           CONFIGS: ${{ join(fromJSON(needs.matrix.outputs.configs), ',') }}
-          PROMOTE: ${{ inputs.promote }}
         run: |
           $p = @{
             Repository = $env:REPOSITORY; SlsVersion = $env:SLS_VERSION; BaseImage = $env:BASE
