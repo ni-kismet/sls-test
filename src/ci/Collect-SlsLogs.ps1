@@ -52,6 +52,13 @@ if ($Container) {
         $dir = Join-Path $Out $Container
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         & docker inspect -f '{{json .State}}' $Container 2>$null | Set-Content (Join-Path $dir 'state.json')
+        # A record of the container's state, to tell a guest crash after start (during tests) apart from other failures.
+        $state = "$(& docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' $Container 2>$null)".Trim()
+        $status, $health = $state -split '\|', 2
+        $panic = "$(& docker exec $Container sh -c 'cat ${STORAGE:-/storage}/sls-panic.txt 2>/dev/null' 2>$null)".Trim()
+        try {
+            & (Join-Path $PSScriptRoot 'Write-SlsHostCpuRecord.ps1') -Event collect "container=$Container" "status=$status" "health=$health" "bugcheck=$(([bool]$panic).ToString().ToLowerInvariant())" "panic=$panic"
+        } catch { Write-Host "::warning::could not write the host CPU record: $($_.Exception.Message)" }
         Import-Module (Join-Path $src 'testkit/SlsTestKit.psm1') -Force
         # docker log always; the guest log bundle only while the container runs.
         try { Save-SlsLogs $Container -Path $dir -TimeoutSec 300 | Out-Null }

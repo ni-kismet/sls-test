@@ -152,11 +152,33 @@ The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-
   SystemLink module evaluations end 45 days after the base build; after that their UI pages are disabled unless you
   pass a license file. Rebuild the base regularly.
 - The guest occasionally bugchecks on some host CPUs; start and build retry automatically (`crash-retries`,
-  `max-attempts`, `reject-cpus`). Both actions log `Host CPU stability: <crashy|reliable|unknown> | <cpu> | <evidence>`
-  from [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) and set the `cpu-stability` output; crashy CPUs get a warning
-  annotation and unknown ones a notice. Update the table from those lines.
+  `max-attempts`, `reject-cpus`). Both actions classify the host CPU as `crashy`, `reliable` or `unknown` with
+  [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) (`cpu-stability` output; a warning annotation for crashy CPUs and a
+  notice for unknown ones). See [Host CPU records](#host-cpu-records) to update the table from CI runs.
 - A first push with the `GITHUB_TOKEN` of a public repository creates a public package. The image contains the
   web admin password (`test` unless you set another).
+
+## Host CPU records
+
+The actions log one line per event in a fixed format, `sls-host-cpu-v1 <compact JSON>`, so CI runs can be scraped to
+keep [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) current. The prefix only changes (`-v2`) when fields change
+incompatibly. Every record has `event`, `cpu`, `stability`, `time`, `repository`, `workflow`, `run_id`, `run_attempt`,
+`job`, `runner`, plus:
+
+| `event` | Logged by | Fields |
+|---------|-----------|--------|
+| `facts` | `sls-start-server`, `sls-build-image` | `hypervisor`, `vcpu`, `mem_gb`, `kvm` (module parameters) |
+| `start` | `sls-start-server`, also on failure | `outcome`, `image`, `attempts`, `bugchecks`, `crash` (stop code), `healthy_sec`, `ready_sec` |
+| `build` | `sls-build-image`, also on failure | `outcome`, `attempts`, `bugchecks`, `config_attempts`, `config_bugchecks`, `minutes` |
+| `collect` | `sls-collect-logs` with `container` | `container`, `status`, `health`, `bugcheck`, `panic`: a crash after start, for example during tests |
+
+```bash
+gh run view <run-id> -R <owner>/<repo> --log | grep -o 'sls-host-cpu-v1 {.*}' | cut -d' ' -f2- | jq -c .
+```
+
+A CPU with any `bugchecks` > 0 or `"bugcheck": true` is crashy; one with many clean `start`/`build` records and no
+crash is reliable. A job without a `collect` record had no crash detected after start only if its workflow runs
+`sls-collect-logs` with the container on failure.
 
 ## Run a server locally
 

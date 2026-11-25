@@ -9,8 +9,8 @@
 # Step outputs (when GITHUB_OUTPUT is set): host-cpu, hypervisor, kvm, cpu-stability (crashy, reliable or unknown,
 # from host-cpus.tsv)
 #
-# Prints "Host CPU stability: <stability> | <cpu> | <evidence>" for scraping from logs, and a warning (crashy) or
-# notice (unknown) annotation.
+# Logs a "sls-host-cpu-v1" facts record for scraping (Write-SlsHostCpuRecord.ps1), and a warning (crashy) or notice
+# (unknown) annotation.
 set -euo pipefail
 
 cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
@@ -32,9 +32,12 @@ if [ -n "${FACTS_DIR:-}" ]; then
 fi
 
 line="Host CPU: $cpu (hypervisor ${hv:-none}); $(nproc) vCPU, $(free -g | awk '/^Mem:/ {print $2}') GB RAM; kvm: ${kvm:-n/a}"
-stability_line="Host CPU stability: $stability | $cpu | ${evidence:-not in src/ci/host-cpus.tsv}"
+stability_line="Host CPU stability: $stability (${evidence:-not in src/ci/host-cpus.tsv})"
 echo "$line"
 echo "$stability_line"
+pwsh -NoProfile -File "$(dirname "${BASH_SOURCE[0]}")/Write-SlsHostCpuRecord.ps1" -Event facts -Cpu "$cpu" -Stability "$stability" \
+  "hypervisor=$hv" "vcpu=$(nproc)" "mem_gb=$(free -g | awk '/^Mem:/ {print $2}')" "kvm=$kvm" ||
+  echo "::warning::could not write the host CPU record"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n\n%s\n' "$line" "$stability_line" >> "$GITHUB_STEP_SUMMARY"; fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   { echo "host-cpu=$cpu"; echo "hypervisor=$hv"; echo "kvm=$kvm"; echo "cpu-stability=$stability"; } >> "$GITHUB_OUTPUT"

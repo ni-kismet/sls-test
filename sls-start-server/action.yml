@@ -130,3 +130,21 @@ runs:
         }
         if ($env:IN_LICENSE_DIR) { $p.LicenseFile = Join-Path $env:IN_LICENSE_DIR 'sls.lic' }
         & "$env:GITHUB_ACTION_PATH/../src/ci/Start-SlsCi.ps1" @p
+
+    - name: Host CPU record
+      if: always() && steps.facts.outcome == 'success'
+      shell: pwsh
+      env:
+        CPU: ${{ steps.facts.outputs.host-cpu }}
+        STABILITY: ${{ steps.facts.outputs.cpu-stability }}
+        OUTCOME: ${{ steps.start.outcome }}
+        IN_IMAGE: ${{ inputs.image }}
+        ATTEMPTS: ${{ steps.start.outputs.attempts }}
+        BUGCHECKS: ${{ steps.start.outputs.bugchecks }}
+        CRASH: ${{ steps.start.outputs.crash }}
+        HEALTHY_SEC: ${{ steps.start.outputs.healthy-sec }}
+        READY_SEC: ${{ steps.start.outputs.ready-sec }}
+      run: |
+        & "$env:GITHUB_ACTION_PATH/../src/ci/Write-SlsHostCpuRecord.ps1" -Event start -Cpu $env:CPU -Stability $env:STABILITY `
+          "outcome=$env:OUTCOME" "image=$env:IN_IMAGE" "attempts=$env:ATTEMPTS" "bugchecks=$env:BUGCHECKS" "crash=$env:CRASH" `
+          "healthy_sec=$env:HEALTHY_SEC" "ready_sec=$env:READY_SEC"
