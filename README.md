@@ -141,7 +141,13 @@ Images carry labels: `org.opencontainers.image.version`, `com.ni.sls.products`, 
 `com.ni.sls.admin-password` (`test` or `custom`, never the value).
 
 The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-server` (`26.5`, `26.5-demo`,
-`26.5-migration`). The package is private; build your own with `sls-build-image` or ask for access.
+`26.5-migration`; public). It runs every Monday at 07:23 UTC: a fresh base (so the module evaluation never lapses),
+both seeded images, a smoke test of each on a fresh runner (start from the registry, service coverage, the seed's
+`-Verify`), and only then are the floating tags moved. A failed run leaves the floating tags on the previous images;
+pin a digest for reproducible runs. Each build adds about 10 GB of versions; the manual `cleanup-images` workflow
+deletes versions older than 45 days (dry run by default), always keeping the floating tags. Locally:
+`pwsh src/ci/Remove-SlsImageVersions.ps1 -Repository ghcr.io/ni-kismet/sls-server [-Delete]` after
+`gh auth refresh -s read:packages,delete:packages`.
 
 ## Limits
 
@@ -150,7 +156,7 @@ The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-
   60 GB (build) or 40 GB (start) are free.
 - Windows Server evaluation: about 180 days after the base build (label `com.ni.sls.windows-eval-expires`).
   SystemLink module evaluations end 45 days after the base build; after that their UI pages are disabled unless you
-  pass a license file. Rebuild the base regularly.
+  pass a license file. Rebuild the base regularly (`build-images` does it weekly).
 - The guest occasionally bugchecks on some host CPUs; start and build retry automatically (`crash-retries`,
   `max-attempts`, `reject-cpus`). Both actions classify the host CPU as `crashy`, `reliable` or `unknown` with
   [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) (`cpu-stability` output; a warning annotation for crashy CPUs and a
@@ -257,8 +263,9 @@ docker compose -f src/testkit/compose.yaml down -t 150
   `testkit/`); tests in [tests/](tests).
 - Workflows: [`ci`](.github/workflows/ci.yml) (lint, every push), [`test`](.github/workflows/test.yml) (builds with the
   fixture seed [tests/seed/Seed.ps1](tests/seed/Seed.ps1), reusing the test package base unless base content changed,
-  then starts the pushed image on a fresh runner), [`build-images`](.github/workflows/build-images.yml) (manual
-  publish).
+  then starts the pushed image on a fresh runner), [`build-images`](.github/workflows/build-images.yml) (weekly and
+  manual publish: build, smoke test, promote), [`cleanup-images`](.github/workflows/cleanup-images.yml) (manual,
+  optional: delete old image versions).
 - History: [docs/history/workflow-test-plan.md](docs/history/workflow-test-plan.md),
   [docs/actions-layout-plan.md](docs/actions-layout-plan.md).
 
