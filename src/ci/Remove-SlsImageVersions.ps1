@@ -4,7 +4,7 @@
 Deletes old versions of a ghcr.io image package. Dry run unless -Delete.
 
 .DESCRIPTION
-Deletes every package version created more than -OlderThanDays days ago, except:
+Deletes every package version created more than -OlderThanDays days ago (0: every version), except:
 - versions with a floating tag: any tag that is not an immutable build tag (r<run>[-<config>],
   <x.y.z>-<yyyyMMdd>[-<HHmm>][-<config>]), so <sls-version>[-<config>] and <x.y.z>[-<config>] always stay;
 - manifests that a kept version lists. Docker with the containerd image store pushes an index whose image and
@@ -30,7 +30,7 @@ pwsh src/ci/Remove-SlsImageVersions.ps1 -Repository ghcr.io/ni-kismet/sls-server
 #>
 param(
     [Parameter(Mandatory)][string]$Repository,
-    [ValidateRange(1, 3650)][int]$OlderThanDays = 45,
+    [ValidateRange(0, 3650)][int]$OlderThanDays = 45,
     [switch]$Delete,
     [string]$Token = ''
 )
@@ -83,20 +83,23 @@ function Get-ChildDigest([string]$Digest) {
 }
 
 $cutoff = [DateTimeOffset]::UtcNow.AddDays(-$OlderThanDays)
-foreach ($v in $versions) {
+foreach ($v in $versions | Where-Object { $_.Tags }) {
     $floating = @($v.Tags | Where-Object { $_ -notmatch $immutableTag })
     if ($floating) { $v.Action = 'keep'; $v.Reason = "floating tag $($floating -join ', ')" }
     elseif ($v.Created -ge $cutoff) { $v.Action = 'keep'; $v.Reason = "newer than $OlderThanDays days" }
 }
-# Protect what kept versions list. Tagged versions are the only ones that can be indexes nobody else lists.
+# Untagged versions are mostly the manifests a tagged index lists: keep those of kept versions, whatever their age.
 $byDigest = @{}; foreach ($v in $versions) { $byDigest[$v.Digest] = $v }
-foreach ($v in @($versions | Where-Object { $_.Action -eq 'keep' -and $_.Tags })) {
+foreach ($v in @($versions | Where-Object { $_.Action -eq 'keep' })) {
     foreach ($d in Get-ChildDigest $v.Digest) {
         $c = $byDigest[$d]
-        if ($c -and $c.Action -ne 'keep') { $c.Action = 'keep'; $c.Reason = "listed by $($v.Digest.Substring(0, 19)) ($($v.Tags[0]))" }
+        if ($c -and -not $c.Tags -and $c.Action -ne 'keep') { $c.Action = 'keep'; $c.Reason = "listed by $($v.Digest.Substring(0, 19)) ($($v.Tags[0]))" }
     }
 }
-foreach ($v in $versions | Where-Object { -not $_.Action }) { $v.Action = 'delete'; $v.Reason = "older than $OlderThanDays days" }
+foreach ($v in $versions | Where-Object { -not $_.Action }) {
+    if ($v.Created -ge $cutoff) { $v.Action = 'keep'; $v.Reason = "newer than $OlderThanDays days" }
+    else { $v.Action = 'delete'; $v.Reason = if ($v.Tags) { "older than $OlderThanDays days" } else { "untagged, older than $OlderThanDays days, not listed by a kept version" } }
+}
 
 $doomed = @($versions | Where-Object Action -eq 'delete' | Sort-Object { -not $_.Tags.Count }, Created)
 if ($doomed.Count -eq $versions.Count) { throw "refusing to delete every version of $Repository (no floating tag and nothing newer than $OlderThanDays days)" }

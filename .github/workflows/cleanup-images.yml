@@ -3,7 +3,7 @@ name: cleanup-images
 # Deletes image versions older than older-than-days (default 45, the module evaluation period) from a ghcr.io package,
 # with src/ci/Remove-SlsImageVersions.ps1. Optional housekeeping: storage of public packages is free. Always kept:
 # floating tags (26.5, 26.5.1, 26.5-demo, ...) and the manifests they list. Dry run unless delete is checked.
-# Pull requests that change the cleanup run a dry run (1 day, so the rules run on nearly every version) against both
+# Pull requests that change the cleanup run a dry run (0 days, so the rules run on every version) against both
 # packages; only a manual dispatch can delete.
 # Deleting needs the Admin role for this repository under each package's Manage Actions access.
 
@@ -49,7 +49,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}
-          # A pull request's dry run uses 1 day so the keep/delete rules run on nearly every version.
-          DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.older-than-days || '1' }}
+          # A pull request's dry run uses 0 days so the keep/delete rules run on every version.
+          DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.older-than-days || '0' }}
           DELETE: ${{ github.event_name == 'workflow_dispatch' && inputs.delete }}
         run: src/ci/Remove-SlsImageVersions.ps1 -Repository $env:PACKAGE -OlderThanDays ([int]$env:DAYS) -Delete:($env:DELETE -eq 'true')
