@@ -107,6 +107,9 @@ outputs:
   host-cpu:
     description: Host CPU model.
     value: ${{ steps.facts.outputs.host-cpu }}
+  cpu-stability:
+    description: Guest stability of the host CPU from src/ci/host-cpus.tsv (crashy, reliable or unknown).
+    value: ${{ steps.facts.outputs.cpu-stability }}
   minutes:
     description: Build minutes (base + seeded image, without push).
     value: ${{ steps.build.outputs.minutes }}

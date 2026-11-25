@@ -90,8 +90,8 @@ Advanced: `name` (`sls`), `ram` (`8G`), `cpu` (`4`), `healthy-timeout-minutes`, 
 `crash-retries` (`1`: a new container after a Windows bugcheck while starting), `replace`, `registry-token`,
 `host-prep`, `min-free-gb`.
 
-Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `host-cpu`. Exports
-`SLS_BASE_URL` and `SLS_CONTAINER` to later steps.
+Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `host-cpu`,
+`cpu-stability`. Exports `SLS_BASE_URL` and `SLS_CONTAINER` to later steps.
 
 ### `sls-build-image`
 
@@ -111,7 +111,7 @@ Advanced: `tags` (extra tags; a seeded image gets `<tag>-<config-name>`), `float
 `registry-token`, `host-prep`, `min-free-gb`, `upload-logs` (`always`/`failure`/`never`), `log-artifact`.
 
 Outputs: `image`, `tags`, `digest`, `base-image`, `config-name`, `public`, `build-id`, `attempts`, `bugchecks`,
-`config-attempts`, `host-cpu`, `minutes`, `versions`.
+`config-attempts`, `host-cpu`, `cpu-stability`, `minutes`, `versions`.
 
 The seed is checked first (exists, parses, has the seed parameters), so a wrong path fails in seconds, not after the
 base build. A build VM that crashes is rebuilt from the install stage, up to `max-attempts`.
@@ -152,7 +152,9 @@ The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-
   SystemLink module evaluations end 45 days after the base build; after that their UI pages are disabled unless you
   pass a license file. Rebuild the base regularly.
 - The guest occasionally bugchecks on some host CPUs; start and build retry automatically (`crash-retries`,
-  `max-attempts`, `reject-cpus`).
+  `max-attempts`, `reject-cpus`). Both actions log `Host CPU stability: <crashy|reliable|unknown> | <cpu> | <evidence>`
+  from [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) and set the `cpu-stability` output; crashy CPUs get a warning
+  annotation and unknown ones a notice. Update the table from those lines.
 - A first push with the `GITHUB_TOKEN` of a public repository creates a public package. The image contains the
   web admin password (`test` unless you set another).
 
