@@ -17,8 +17,10 @@ function Check([bool]$Ok, [string]$What) { if ($Ok) { Write-Host "ok   $What" } 
 $start = $env:START_OUT | ConvertFrom-Json -AsHashtable
 $build = if ($env:BUILD_OUT) { $env:BUILD_OUT | ConvertFrom-Json -AsHashtable } else { $null }
 foreach ($k in 'base-url', 'container', 'healthy-sec', 'ready-sec', 'attempts', 'host-cpu') { Check ([bool]$start[$k]) "sls-start-server output $k = '$($start[$k])'" }
+Check ($start['cpu-stability'] -in 'crashy', 'reliable', 'unknown') "sls-start-server output cpu-stability = '$($start['cpu-stability'])'"
 if ($build) {
     foreach ($k in 'image', 'tags', 'base-image', 'config-name', 'minutes', 'versions', 'host-cpu') { Check ([bool]$build[$k]) "sls-build-image output $k = '$($build[$k])'" }
+    Check ($build['cpu-stability'] -in 'crashy', 'reliable', 'unknown') "sls-build-image output cpu-stability = '$($build['cpu-stability'])'"
     Check ($build['image'] -match ':\d+\.\d+\.\d+-\d{8}-\d{4}-[a-z0-9_-]+$') "seeded image has a unique dated tag ($($build['image']))"
     Check ($build['digest'] -match '@sha256:[0-9a-f]{64}$') "pushed digest ($($build['digest']))"
 }
@@ -39,7 +41,7 @@ if ($env:SEED) {
     Check $ok "seeded data present ($env:SEED -Verify)"
 }
 
-$md = @('### Action checks', '', "Server $($start['base-url']) healthy $($start['healthy-sec']) s, ready $($start['ready-sec']) s, attempts $($start['attempts']), host $($start['host-cpu'])")
+$md = @('### Action checks', '', "Server $($start['base-url']) healthy $($start['healthy-sec']) s, ready $($start['ready-sec']) s, attempts $($start['attempts']), host $($start['host-cpu']) ($($start['cpu-stability']))")
 if ($build) { $md += "Image ``$($build['image'])`` ($($build['minutes']) min, base attempts $($build['attempts']), seed attempts $($build['config-attempts']), digest $($build['digest']))" }
 $md += $(if ($fail.Count) { "**FAILED:** $($fail -join '; ')" } else { 'All checks passed.' })
 $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY

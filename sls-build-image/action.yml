@@ -107,6 +107,9 @@ outputs:
   host-cpu:
     description: Host CPU model.
     value: ${{ steps.facts.outputs.host-cpu }}
+  cpu-stability:
+    description: Guest stability of the host CPU from src/ci/host-cpus.tsv (crashy, reliable or unknown).
+    value: ${{ steps.facts.outputs.cpu-stability }}
   minutes:
     description: Build minutes (base + seeded image, without push).
     value: ${{ steps.build.outputs.minutes }}
@@ -181,6 +184,23 @@ runs:
         }
         if ($env:IN_LICENSE_DIR) { $p.LicenseFile = Join-Path $env:IN_LICENSE_DIR 'sls.lic' }
         & "$env:GITHUB_ACTION_PATH/../src/ci/Build-SlsCi.ps1" @p
+
+    - name: Host CPU record
+      if: always() && steps.facts.outcome == 'success'
+      shell: pwsh
+      env:
+        CPU: ${{ steps.facts.outputs.host-cpu }}
+        STABILITY: ${{ steps.facts.outputs.cpu-stability }}
+        OUTCOME: ${{ steps.build.outcome }}
+        ATTEMPTS: ${{ steps.build.outputs.attempts }}
+        BUGCHECKS: ${{ steps.build.outputs.bugchecks }}
+        CONFIG_ATTEMPTS: ${{ steps.build.outputs.config_attempts }}
+        CONFIG_BUGCHECKS: ${{ steps.build.outputs.config_bugchecks }}
+        MINUTES: ${{ steps.build.outputs.minutes }}
+      run: |
+        & "$env:GITHUB_ACTION_PATH/../src/ci/Write-SlsHostCpuRecord.ps1" -Event build -Cpu $env:CPU -Stability $env:STABILITY `
+          "outcome=$env:OUTCOME" "attempts=$env:ATTEMPTS" "bugchecks=$env:BUGCHECKS" "config_attempts=$env:CONFIG_ATTEMPTS" `
+          "config_bugchecks=$env:CONFIG_BUGCHECKS" "minutes=$env:MINUTES"
 
     - name: Push
       id: push

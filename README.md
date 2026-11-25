@@ -90,8 +90,8 @@ Advanced: `name` (`sls`), `ram` (`8G`), `cpu` (`4`), `healthy-timeout-minutes`, 
 `crash-retries` (`1`: a new container after a Windows bugcheck while starting), `replace`, `registry-token`,
 `host-prep`, `min-free-gb`.
 
-Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `host-cpu`. Exports
-`SLS_BASE_URL` and `SLS_CONTAINER` to later steps.
+Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `host-cpu`,
+`cpu-stability`. Exports `SLS_BASE_URL` and `SLS_CONTAINER` to later steps.
 
 ### `sls-build-image`
 
@@ -111,7 +111,7 @@ Advanced: `tags` (extra tags; a seeded image gets `<tag>-<config-name>`), `float
 `registry-token`, `host-prep`, `min-free-gb`, `upload-logs` (`always`/`failure`/`never`), `log-artifact`.
 
 Outputs: `image`, `tags`, `digest`, `base-image`, `config-name`, `public`, `build-id`, `attempts`, `bugchecks`,
-`config-attempts`, `host-cpu`, `minutes`, `versions`.
+`config-attempts`, `host-cpu`, `cpu-stability`, `minutes`, `versions`.
 
 The seed is checked first (exists, parses, has the seed parameters), so a wrong path fails in seconds, not after the
 base build. A build VM that crashes is rebuilt from the install stage, up to `max-attempts`.
@@ -152,9 +152,33 @@ The `build-images` workflow of this repository publishes `ghcr.io/ni-kismet/sls-
   SystemLink module evaluations end 45 days after the base build; after that their UI pages are disabled unless you
   pass a license file. Rebuild the base regularly.
 - The guest occasionally bugchecks on some host CPUs; start and build retry automatically (`crash-retries`,
-  `max-attempts`, `reject-cpus`).
+  `max-attempts`, `reject-cpus`). Both actions classify the host CPU as `crashy`, `reliable` or `unknown` with
+  [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) (`cpu-stability` output; a warning annotation for crashy CPUs and a
+  notice for unknown ones). See [Host CPU records](#host-cpu-records) to update the table from CI runs.
 - A first push with the `GITHUB_TOKEN` of a public repository creates a public package. The image contains the
   web admin password (`test` unless you set another).
+
+## Host CPU records
+
+The actions log one line per event in a fixed format, `sls-host-cpu-v1 <compact JSON>`, so CI runs can be scraped to
+keep [src/ci/host-cpus.tsv](src/ci/host-cpus.tsv) current. The prefix only changes (`-v2`) when fields change
+incompatibly. Every record has `event`, `cpu`, `stability`, `time`, `repository`, `workflow`, `run_id`, `run_attempt`,
+`job`, `runner`, plus:
+
+| `event` | Logged by | Fields |
+|---------|-----------|--------|
+| `facts` | `sls-start-server`, `sls-build-image` | `hypervisor`, `vcpu`, `mem_gb`, `kvm` (module parameters) |
+| `start` | `sls-start-server`, also on failure | `outcome`, `image`, `attempts`, `bugchecks`, `crash` (stop code), `healthy_sec`, `ready_sec` |
+| `build` | `sls-build-image`, also on failure | `outcome`, `attempts`, `bugchecks`, `config_attempts`, `config_bugchecks`, `minutes` |
+| `collect` | `sls-collect-logs` with `container` | `container`, `status`, `health`, `bugcheck`, `panic`: a crash after start, for example during tests |
+
+```bash
+gh run view <run-id> -R <owner>/<repo> --log | grep -o 'sls-host-cpu-v1 {.*}' | cut -d' ' -f2- | jq -c .
+```
+
+A CPU with any `bugchecks` > 0 or `"bugcheck": true` is crashy; one with many clean `start`/`build` records and no
+crash is reliable. A job without a `collect` record had no crash detected after start only if its workflow runs
+`sls-collect-logs` with the container on failure.
 
 ## Run a server locally
 
