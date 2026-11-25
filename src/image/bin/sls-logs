@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Collects SystemLink Server and Windows logs from the guest (Collect-Logs.ps1 through sls-exec) plus the container-side
-# agent, install and seal files into /shared/logs/<timestamp> (linked as /shared/logs/latest) and writes a .tgz.
+# agent, install and seal files (and a bugcheck's sls-panic.txt/.ppm) into /shared/logs/<timestamp> (linked as
+# /shared/logs/latest) and writes a .tgz.
 #   docker exec <c> sls-logs -o /tmp/sls-logs.tgz && docker cp <c>:/tmp/sls-logs.tgz .
 #   docker exec <c> sls-logs > sls-logs.tgz          (bash and PowerShell 7.4+; older PowerShell corrupts binary pipes)
 #   -t seconds  guest collection timeout (default 600); -n  no archive, only the folder
 # Without a running guest agent, or after a Windows bugcheck, only the container-side files are archived. Progress
 # goes to stderr.
 set -u
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 outf=-
 timeout=600
 archive=1
@@ -45,6 +46,7 @@ fi
 for d in agent install seal; do
   [ -d "/shared/$d" ] && cp -r "/shared/$d" "$dir/container-$d" 2>/dev/null
 done
+cp "${STORAGE:-/storage}"/sls-panic.txt "${STORAGE:-/storage}"/sls-panic.ppm "$dir/" 2>/dev/null
 {
   echo "collected: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "SLS_CONFIG=${SLS_CONFIG:-}"

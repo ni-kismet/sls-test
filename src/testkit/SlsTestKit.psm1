@@ -259,8 +259,8 @@ function Invoke-SlsGuest {
 function Save-SlsLogs {
     <#
     .SYNOPSIS
-    Collects the guest logs (sls-logs) and the container log into -Path. Returns the files written. Skips the guest
-    logs after a Windows bugcheck (the guest is paused).
+    Collects the guest logs (sls-logs) and the container log into -Path. Returns the files written. After a Windows
+    bugcheck it adds sls-panic.txt and the last screen (sls-panic.ppm) and skips the guest logs (the guest is paused).
     #>
     param([Parameter(Mandatory, Position = 0)]$Server, [string]$Path = '.', [int]$TimeoutSec = 600)
     $name = if ($Server -is [string]) { $Server } else { $Server.Name }
@@ -270,9 +270,15 @@ function Save-SlsLogs {
     $dockerLog = Join-Path $Path "$name-$stamp-docker.log"
     & docker logs -t $name *> $dockerLog
     $files += $dockerLog
+    # sls-panic-watch's record of a bugcheck and the last screen before it (the blue screen, or the frame before).
+    $panic = ''
+    foreach ($f in 'sls-panic.txt', 'sls-panic.ppm') {
+        $dest = Join-Path $Path "$name-$stamp-$f"
+        & docker cp "${name}:/storage/$f" $dest 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $dest)) { $files += $dest; if ($f -like '*.txt') { $panic = (Get-Content $dest -Raw).Trim() } }
+    }
     $running = "$(& docker inspect -f '{{.State.Running}}' $name 2>$null)" -eq 'true'
     # Images before the sls-logs bugcheck check would wait out -TimeoutSec on the paused guest.
-    $panic = if ($running) { "$(& docker exec $name sh -c 'cat ${STORAGE:-/storage}/sls-panic.txt 2>/dev/null' 2>$null)".Trim() }
     if ($panic) { Write-Warning "Windows bugcheck in ${name} ($panic): skipping guest logs" }
     elseif ($running) {
         $progress = & docker exec $name sls-logs -t $TimeoutSec -o /tmp/sls-logs.tgz 2>&1

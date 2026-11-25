@@ -9,7 +9,7 @@ inputs:
     description: Files or folders to include, one per line (missing ones are skipped).
     default: ''
   container:
-    description: Optional container name; adds its docker log, state and guest log bundle (sls-logs).
+    description: Optional container name; adds its docker log, state and guest log bundle (sls-logs), or after a Windows bugcheck the sls-panic.txt/.ppm last screen instead of the guest logs.
     default: ''
   artifact:
     description: Artifact name (must be unique in the run).
