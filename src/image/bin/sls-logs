@@ -4,9 +4,10 @@
 #   docker exec <c> sls-logs -o /tmp/sls-logs.tgz && docker cp <c>:/tmp/sls-logs.tgz .
 #   docker exec <c> sls-logs > sls-logs.tgz          (bash and PowerShell 7.4+; older PowerShell corrupts binary pipes)
 #   -t seconds  guest collection timeout (default 600); -n  no archive, only the folder
-# Without a running guest agent only the container-side files are archived. Progress goes to stderr.
+# Without a running guest agent, or after a Windows bugcheck, only the container-side files are archived. Progress
+# goes to stderr.
 set -u
-usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
 outf=-
 timeout=600
 archive=1
@@ -29,7 +30,10 @@ dir=/shared/logs/$name
 mkdir -p "$dir"
 log() { echo "sls-logs: $*" >&2; }
 
-if [ -s /shared/agent/boot.json ]; then
+if [ -e "${STORAGE:-/storage}/sls-panic.txt" ]; then
+  # boot.json survives a bugcheck; the paused guest would only run out the timeout.
+  log "Windows bugcheck ($(cat "${STORAGE:-/storage}/sls-panic.txt")): container-side files only"
+elif [ -s /shared/agent/boot.json ]; then
   log "collecting guest logs (timeout ${timeout}s)"
   sls-exec -t "$timeout" -c "& 'C:\\sls\\guest\\Collect-Logs.ps1' -Name '$name'" >&2
   rc=$?

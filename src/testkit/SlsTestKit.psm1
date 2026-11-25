@@ -259,7 +259,8 @@ function Invoke-SlsGuest {
 function Save-SlsLogs {
     <#
     .SYNOPSIS
-    Collects the guest logs (sls-logs) and the container log into -Path. Returns the files written.
+    Collects the guest logs (sls-logs) and the container log into -Path. Returns the files written. Skips the guest
+    logs after a Windows bugcheck (the guest is paused).
     #>
     param([Parameter(Mandatory, Position = 0)]$Server, [string]$Path = '.', [int]$TimeoutSec = 600)
     $name = if ($Server -is [string]) { $Server } else { $Server.Name }
@@ -269,7 +270,11 @@ function Save-SlsLogs {
     $dockerLog = Join-Path $Path "$name-$stamp-docker.log"
     & docker logs -t $name *> $dockerLog
     $files += $dockerLog
-    if ("$(& docker inspect -f '{{.State.Running}}' $name 2>$null)" -eq 'true') {
+    $running = "$(& docker inspect -f '{{.State.Running}}' $name 2>$null)" -eq 'true'
+    # Images before the sls-logs bugcheck check would wait out -TimeoutSec on the paused guest.
+    $panic = if ($running) { "$(& docker exec $name sh -c 'cat ${STORAGE:-/storage}/sls-panic.txt 2>/dev/null' 2>$null)".Trim() }
+    if ($panic) { Write-Warning "Windows bugcheck in ${name} ($panic): skipping guest logs" }
+    elseif ($running) {
         $progress = & docker exec $name sls-logs -t $TimeoutSec -o /tmp/sls-logs.tgz 2>&1
         $tgz = Join-Path $Path "$name-$stamp-logs.tgz"
         & docker cp "${name}:/tmp/sls-logs.tgz" $tgz 2>&1 | Out-Null
