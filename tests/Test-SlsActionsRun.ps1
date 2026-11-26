@@ -18,6 +18,7 @@ $start = $env:START_OUT | ConvertFrom-Json -AsHashtable
 $build = if ($env:BUILD_OUT) { $env:BUILD_OUT | ConvertFrom-Json -AsHashtable } else { $null }
 foreach ($k in 'base-url', 'container', 'healthy-sec', 'ready-sec', 'attempts', 'host-cpu') { Check ([bool]$start[$k]) "sls-start-server output $k = '$($start[$k])'" }
 Check ($start['cpu-stability'] -in 'crashy', 'reliable', 'unknown') "sls-start-server output cpu-stability = '$($start['cpu-stability'])'"
+Check ($start.ContainsKey('failure') -and -not $start['failure']) "sls-start-server output failure empty ('$($start['failure'])')"
 if ($build) {
     foreach ($k in 'image', 'tags', 'base-image', 'config-name', 'minutes', 'versions', 'host-cpu') { Check ([bool]$build[$k]) "sls-build-image output $k = '$($build[$k])'" }
     Check ($build['cpu-stability'] -in 'crashy', 'reliable', 'unknown') "sls-build-image output cpu-stability = '$($build['cpu-stability'])'"

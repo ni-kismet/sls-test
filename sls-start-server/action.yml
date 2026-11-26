@@ -76,6 +76,11 @@ outputs:
   crash:
     description: Stop code of the last guest bugcheck ('' = none).
     value: ${{ steps.start.outputs.crash }}
+  failure:
+    description: >-
+      Why the start failed ('' = started): pull, setup, bugcheck, exited, runtime-settings, unhealthy,
+      healthy-timeout, services or start (see src/ci/Start-SlsCi.ps1).
+    value: ${{ steps.start.outputs.failure }}
   host-cpu:
     description: Host CPU model.
     value: ${{ steps.facts.outputs.host-cpu }}
@@ -142,9 +147,10 @@ runs:
         ATTEMPTS: ${{ steps.start.outputs.attempts }}
         BUGCHECKS: ${{ steps.start.outputs.bugchecks }}
         CRASH: ${{ steps.start.outputs.crash }}
+        FAILURE: ${{ steps.start.outputs.failure }}
         HEALTHY_SEC: ${{ steps.start.outputs.healthy-sec }}
         READY_SEC: ${{ steps.start.outputs.ready-sec }}
       run: |
         & "$env:GITHUB_ACTION_PATH/../src/ci/Write-SlsHostCpuRecord.ps1" -Event start -Cpu $env:CPU -Stability $env:STABILITY `
           "outcome=$env:OUTCOME" "image=$env:IN_IMAGE" "attempts=$env:ATTEMPTS" "bugchecks=$env:BUGCHECKS" "crash=$env:CRASH" `
-          "healthy_sec=$env:HEALTHY_SEC" "ready_sec=$env:READY_SEC"
+          "failure=$env:FAILURE" "healthy_sec=$env:HEALTHY_SEC" "ready_sec=$env:READY_SEC"

@@ -16,7 +16,18 @@ A Windows bugcheck or an exited container while starting is retried up to -Crash
 (the failed container's logs go below -LogDir); other failures (timeout, runtime settings failure) are not retried.
 
 GitHub step outputs: base-url, container, http-port, pull-sec, healthy-sec, ready-sec, attempts, bugchecks, crash (the
-last bugcheck's stop code), log-dir. Exported to later steps (GITHUB_ENV): SLS_BASE_URL, SLS_CONTAINER, SLS_HTTP_PORT.
+last bugcheck's stop code), failure, log-dir. Exported to later steps (GITHUB_ENV): SLS_BASE_URL, SLS_CONTAINER,
+SLS_HTTP_PORT. failure is empty on success, else why the last attempt failed:
+  pull              docker pull failed
+  setup             a container of the same name exists (without -Replace)
+  bugcheck          Windows bugcheck (also one found after a service coverage failure)
+  exited            the container exited or disappeared
+  runtime-settings  the guest agent could not apply the runtime settings
+  unhealthy         the container healthcheck reported unhealthy
+  healthy-timeout   not healthy within -TimeoutSec
+  services          healthy, but services did not answer within -ServicesTimeoutSec (with bugchecks 0: a guest hang
+                    or a broken image)
+  start             any other error while starting
 
 .EXAMPLE
 pwsh src/ci/Start-SlsCi.ps1 -Image ghcr.io/ni-kismet/sls-server:26.5-migration -Name sls
@@ -48,6 +59,15 @@ function Write-CiOutput([Collections.IDictionary]$Values) {
 function Add-Summary([string[]]$Lines) {
     if ($env:GITHUB_STEP_SUMMARY) { $Lines -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8 } else { $Lines | Write-Host }
 }
+function Get-StartFailure([string]$Message) {
+    $first = ($Message -split "`n")[0]
+    if ($first -match 'Windows bugcheck') { return 'bugcheck' }
+    if ($first -match 'is (exited|gone|dead)\b') { return 'exited' }
+    if ($first -match 'runtime settings failed') { return 'runtime-settings' }
+    if ($first -match 'is unhealthy') { return 'unhealthy' }
+    if ($first -match 'not healthy after') { return 'healthy-timeout' }
+    return 'start'
+}
 
 $password = if ($env:SLS_ADMIN_PASSWORD) { $env:SLS_ADMIN_PASSWORD } else { 'test' }
 $cred = [pscredential]::new('admin', (ConvertTo-SecureString $password -AsPlainText -Force))
@@ -59,7 +79,10 @@ if ($LASTEXITCODE -ne 0) {
     for ($i = 1; ; $i++) {
         & docker pull $Image
         if ($LASTEXITCODE -eq 0) { break }
-        if ($i -ge 3) { throw "docker pull $Image failed 3 times" }
+        if ($i -ge 3) {
+            Write-CiOutput ([ordered]@{ container = $Name; failure = 'pull'; 'log-dir' = $LogDir })
+            throw "docker pull $Image failed 3 times"
+        }
         Start-Sleep -Seconds (30 * $i)
     }
 } else { Write-Host "using local image $Image" }
@@ -70,7 +93,10 @@ $credArgs = if ($imagePassword -and $imagePassword -ceq $password) { @{ Credenti
 Write-Host "web admin password: $(if ($credArgs.Credential) { 'already set in the image' } else { 'set at start' })"
 
 if ("$(& docker inspect -f '{{.Name}}' $Name 2>$null)".Trim()) {
-    if (-not $Replace) { throw "a container named $Name exists; pass replace: true to remove it" }
+    if (-not $Replace) {
+        Write-CiOutput ([ordered]@{ container = $Name; 'pull-sec' = $pullSec; failure = 'setup'; 'log-dir' = $LogDir })
+        throw "a container named $Name exists; pass replace: true to remove it"
+    }
     Write-Host "removing existing container $Name"
     Stop-SlsServer $Name
 }
@@ -92,8 +118,10 @@ for ($n = 1; $n -le $CrashRetries + 1; $n++) {
         $dir = Join-Path $LogDir "$Name-a$n"
         try { Save-SlsLogs $Name -Path $dir -TimeoutSec 120 | Out-Null } catch { Write-Host "log collection failed: $($_.Exception.Message)" }
         if (-not $crash -or $n -gt $CrashRetries) {
-            Write-CiOutput ([ordered]@{ container = $Name; 'pull-sec' = $pullSec; attempts = $attempts; bugchecks = $bugchecks; crash = $crashCode; 'log-dir' = $LogDir })
-            Add-Summary @("SystemLink Server ``$Image`` failed to start after $attempts attempt(s) ($bugchecks bugcheck(s)): $(($msg -split "`n")[0])")
+            $failure = Get-StartFailure $msg
+            Write-CiOutput ([ordered]@{ container = $Name; 'pull-sec' = $pullSec; attempts = $attempts; bugchecks = $bugchecks; crash = $crashCode
+                    failure = $failure; 'log-dir' = $LogDir })
+            Add-Summary @("SystemLink Server ``$Image`` failed to start after $attempts attempt(s) ($bugchecks bugcheck(s), $failure): $(($msg -split "`n")[0])")
             throw
         }
         Stop-SlsServer $Name
@@ -103,7 +131,18 @@ for ($n = 1; $n -le $CrashRetries + 1; $n++) {
 $readySec = $healthySec
 $coverage = @()
 if ($WaitFor -eq 'services') {
-    $coverage = Test-SlsServiceCoverage $server -WaitSec $ServicesTimeoutSec -Throw
+    try {
+        $coverage = Test-SlsServiceCoverage $server -WaitSec $ServicesTimeoutSec -Throw
+    } catch {
+        $msg = $_.Exception.Message
+        $failure = 'services'
+        $panic = "$(& docker exec $Name sh -c 'cat ${STORAGE:-/storage}/sls-panic.txt 2>/dev/null' 2>$null)".Trim()
+        if ($panic) { $failure = 'bugcheck'; $bugchecks++; $crashCode = $panic }
+        Write-CiOutput ([ordered]@{ container = $Name; 'pull-sec' = $pullSec; 'healthy-sec' = $healthySec; attempts = $attempts
+                bugchecks = $bugchecks; crash = $crashCode; failure = $failure; 'log-dir' = $LogDir })
+        Add-Summary @("SystemLink Server ``$Image`` was healthy after $healthySec s but not ready ($failure): $(($msg -split "`n")[0])")
+        throw
+    }
     $readySec = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 }
 
@@ -111,7 +150,8 @@ if ($env:GITHUB_ENV) {
     Add-Content $env:GITHUB_ENV -Value "SLS_BASE_URL=$($server.BaseUrl)", "SLS_CONTAINER=$Name", "SLS_HTTP_PORT=$($server.HttpPort)" -Encoding utf8
 }
 Write-CiOutput ([ordered]@{ 'base-url' = $server.BaseUrl; container = $Name; 'http-port' = $server.HttpPort; 'pull-sec' = $pullSec
-        'healthy-sec' = $healthySec; 'ready-sec' = $readySec; attempts = $attempts; bugchecks = $bugchecks; crash = $crashCode; 'log-dir' = $LogDir })
+        'healthy-sec' = $healthySec; 'ready-sec' = $readySec; attempts = $attempts; bugchecks = $bugchecks; crash = $crashCode
+        failure = ''; 'log-dir' = $LogDir })
 $cov = if ($coverage) { ' services: ' + (($coverage | ForEach-Object { "$($_.Resource) $($_.Result)" }) -join ', ') } else { '' }
 Add-Summary @("SystemLink Server ``$Image`` as ``$Name`` at $($server.BaseUrl): pull $pullSec s, healthy $healthySec s, ready ($WaitFor) $readySec s, $attempts attempt(s), $bugchecks bugcheck(s).$cov")
 Write-Host "SystemLink Server $Name ready at $($server.BaseUrl)"

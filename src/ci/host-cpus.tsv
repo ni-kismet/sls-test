@@ -6,7 +6,7 @@
 # Models not listed are reported as unknown. Add or move rows from the sls-host-cpu-v1 records of CI runs.
 crashy	EPYC 9V45( |$)	2 of 2 builds bugchecked in Seal (workflow-test-plan W4B.9); runtime bugcheck in ni-kismet/systemlink-cli run 45690416298
 crashy	EPYC 7763( |$)	1 Install bugcheck in 6 build attempts; 1 of 6 soak jobs never healthy (W4B.9)
-reliable	EPYC 9V74( |$)	0 of 6 soak jobs failed; 2 of 2 builds (W4B.9)
+crashy	EPYC 9V74( |$)	2 runtime bugchecks while seeding in ni-kismet/systemlink-cli run 45732426370; services hang at start in ni-kismet/sls-test run 45720216456; earlier 0 of 6 soak jobs failed (W4B.9)
 reliable	Xeon\(R\) 6975P-C( |$)	0 of 10 soak jobs failed; 4 of 4 builds (W4B.9)
 reliable	Platinum 8573C( |$)	0 of 18 soak jobs failed; 6 of 6 builds (W4B.9)
 reliable	Platinum 8370C( |$)	0 of 6 soak jobs failed; 2 of 2 builds (W4B.9)

@@ -90,7 +90,7 @@ Advanced: `name` (`sls`), `ram` (`8G`), `cpu` (`4`), `healthy-timeout-minutes`, 
 `crash-retries` (`1`: a new container after a Windows bugcheck while starting), `replace`, `registry-token`,
 `host-prep`, `min-free-gb`.
 
-Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `host-cpu`,
+Outputs: `base-url`, `container`, `pull-sec`, `healthy-sec`, `ready-sec`, `attempts`, `crash`, `failure`, `host-cpu`,
 `cpu-stability`. Exports `SLS_BASE_URL` and `SLS_CONTAINER` to later steps.
 
 ### `sls-build-image`
@@ -174,7 +174,7 @@ incompatibly. Every record has `event`, `cpu`, `stability`, `time`, `repository`
 | `event` | Logged by | Fields |
 |---------|-----------|--------|
 | `facts` | `sls-start-server`, `sls-build-image` | `hypervisor`, `vcpu`, `mem_gb`, `kvm` (module parameters) |
-| `start` | `sls-start-server`, also on failure | `outcome`, `image`, `attempts`, `bugchecks`, `crash` (stop code), `healthy_sec`, `ready_sec` |
+| `start` | `sls-start-server`, also on failure | `outcome`, `image`, `attempts`, `bugchecks`, `crash` (stop code), `failure`, `healthy_sec`, `ready_sec` |
 | `build` | `sls-build-image`, also on failure | `outcome`, `attempts`, `bugchecks`, `config_attempts`, `config_bugchecks`, `minutes` |
 | `collect` | `sls-collect-logs` with `container` | `container`, `status`, `health`, `bugcheck`, `panic`: a crash after start, for example during tests |
 
@@ -183,8 +183,11 @@ gh run view <run-id> -R <owner>/<repo> --log | grep -o 'sls-host-cpu-v1 {.*}' | 
 ```
 
 A CPU with any `bugchecks` > 0 or `"bugcheck": true` is crashy; one with many clean `start`/`build` records and no
-crash is reliable. A job without a `collect` record had no crash detected after start only if its workflow runs
-`sls-collect-logs` with the container on failure.
+crash is reliable. `failure` says why a start failed: `bugcheck`, `exited`, `runtime-settings`, `unhealthy`,
+`healthy-timeout`, `services` (healthy, then services stopped answering), `pull`, `setup` or `start`. Without a
+bugcheck, `unhealthy`, `healthy-timeout` and `services` usually mean a guest hang (crashy) when the same image starts
+elsewhere; `pull` and `setup` are not about the host. A job without a `collect` record had no crash detected after
+start only if its workflow runs `sls-collect-logs` with the container on failure.
 
 ## Run a server locally
 

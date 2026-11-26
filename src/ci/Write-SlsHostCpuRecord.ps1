@@ -10,7 +10,8 @@ run_id, run_attempt, job, runner. -Field adds the event's fields as key=value (i
 
 Events:
   facts    host-facts.sh (both actions): hypervisor, vcpu, mem_gb, kvm
-  start    sls-start-server, also on failure: outcome, image, attempts, bugchecks, crash, healthy_sec, ready_sec
+  start    sls-start-server, also on failure: outcome, image, attempts, bugchecks, crash, failure, healthy_sec,
+           ready_sec
   build    sls-build-image, also on failure: outcome, attempts, bugchecks, config_attempts, config_bugchecks, minutes
   collect  sls-collect-logs with a container (a crash after start): container, status, health, bugcheck, panic
 
